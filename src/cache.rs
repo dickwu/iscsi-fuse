@@ -10,8 +10,7 @@ pub struct BlockCache {
 
 impl BlockCache {
     pub fn new(capacity_blocks: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity_blocks.max(1))
-            .expect("capacity must be > 0");
+        let cap = NonZeroUsize::new(capacity_blocks.max(1)).expect("capacity must be > 0");
         Self {
             inner: Mutex::new(LruCache::new(cap)),
         }
@@ -34,5 +33,4 @@ impl BlockCache {
             cache.pop(&lba);
         }
     }
-
 }

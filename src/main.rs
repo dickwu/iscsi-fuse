@@ -4,8 +4,8 @@ mod config;
 mod fuse_fs;
 mod iscsi_backend;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -23,8 +23,7 @@ fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("iscsi_fuse=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("iscsi_fuse=info")),
         )
         .init();
 
@@ -37,17 +36,14 @@ fn main() -> Result<()> {
     }
 
     // Load iSCSI config
-    let iscsi_cfg = Config::load_from_file(&args.config)
-        .context("Failed to load iSCSI configuration")?;
+    let iscsi_cfg =
+        Config::load_from_file(&args.config).context("Failed to load iSCSI configuration")?;
 
     // Create Tokio runtime
-    let rt = tokio::runtime::Runtime::new()
-        .context("Failed to create Tokio runtime")?;
+    let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
 
     // Connect to iSCSI target
-    let backend = rt.block_on(async {
-        IscsiBackend::connect(&iscsi_cfg, args.lun).await
-    })?;
+    let backend = rt.block_on(async { IscsiBackend::connect(&iscsi_cfg, args.lun).await })?;
 
     let backend = Arc::new(backend);
 
@@ -100,8 +96,7 @@ fn main() -> Result<()> {
         args.mount_point.display()
     );
 
-    fuser::mount2(fuse_fs, &args.mount_point, &fuse_config)
-        .context("FUSE mount2 failed")?;
+    fuser::mount2(fuse_fs, &args.mount_point, &fuse_config).context("FUSE mount2 failed")?;
 
     info!("FUSE session ended, disconnecting iSCSI...");
 

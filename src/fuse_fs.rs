@@ -105,11 +105,7 @@ impl IscsiFuseFs {
 }
 
 impl Filesystem for IscsiFuseFs {
-    fn init(
-        &mut self,
-        _req: &Request,
-        _config: &mut KernelConfig,
-    ) -> std::io::Result<()> {
+    fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> std::io::Result<()> {
         debug!("FUSE filesystem initialized");
         Ok(())
     }

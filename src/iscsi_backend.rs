@@ -46,9 +46,7 @@ impl IscsiBackend {
             .await
             .context("iSCSI login failed")?;
 
-        let tsih = *tsihs
-            .first()
-            .context("No sessions returned from login")?;
+        let tsih = *tsihs.first().context("No sessions returned from login")?;
         let cid: u16 = 0;
 
         info!(tsih, cid, "iSCSI session established");
@@ -147,8 +145,7 @@ impl IscsiBackend {
 
         debug!(
             data_len = outcome.data.len(),
-            "READ CAPACITY(16) raw response bytes: {:02x?}",
-            &outcome.data
+            "READ CAPACITY(16) raw response bytes: {:02x?}", &outcome.data
         );
 
         let parsed = parse_read_capacity16_zerocopy(&outcome.data)?;

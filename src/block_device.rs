@@ -120,11 +120,7 @@ impl BlockDevice {
     }
 
     /// Read blocks, using cache where possible.
-    fn read_blocks_with_cache(
-        &self,
-        start_lba: u64,
-        block_count: u32,
-    ) -> Result<Vec<u8>, Errno> {
+    fn read_blocks_with_cache(&self, start_lba: u64, block_count: u32) -> Result<Vec<u8>, Errno> {
         let bs = self.block_size as usize;
         let mut result = Vec::with_capacity(block_count as usize * bs);
 
@@ -151,10 +147,8 @@ impl BlockDevice {
                     let block_start = j as usize * bs;
                     let block_end = block_start + bs;
                     if block_end <= data.len() {
-                        self.cache.put(
-                            miss_lba + j as u64,
-                            data[block_start..block_end].to_vec(),
-                        );
+                        self.cache
+                            .put(miss_lba + j as u64, data[block_start..block_end].to_vec());
                     }
                 }
 
@@ -166,11 +160,7 @@ impl BlockDevice {
     }
 
     /// Read blocks directly from iSCSI (no cache).
-    fn read_blocks_direct(
-        &self,
-        start_lba: u64,
-        block_count: u32,
-    ) -> Result<Vec<u8>, Errno> {
+    fn read_blocks_direct(&self, start_lba: u64, block_count: u32) -> Result<Vec<u8>, Errno> {
         self.rt_handle
             .block_on(self.backend.scsi_read(start_lba, block_count))
             .map_err(|e| {
