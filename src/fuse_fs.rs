@@ -40,14 +40,17 @@ impl IscsiFuseFs {
         }
     }
 
-    pub fn fuse_config(read_only: bool) -> Config {
+    pub fn fuse_config(read_only: bool, volume_name: &str) -> Config {
         let mut options = vec![
             MountOption::FSName("iscsi-fuse".to_string()),
             MountOption::Subtype("iscsi".to_string()),
             MountOption::DefaultPermissions,
             MountOption::NoDev,
             MountOption::NoSuid,
-            MountOption::NoExec,
+            // macFUSE: set volume name for Finder sidebar
+            MountOption::CUSTOM(format!("volname={volume_name}")),
+            // macFUSE: report as local volume so Finder shows disk icon
+            MountOption::CUSTOM("local".to_string()),
         ];
         if read_only {
             options.push(MountOption::RO);
@@ -252,10 +255,17 @@ impl Filesystem for IscsiFuseFs {
         let total = self.block_device.total_bytes();
         let blocks = total / bs;
 
+        // When read-write, report all space as free so Finder shows usable capacity
+        let (free, avail) = if self.read_only {
+            (0, 0)
+        } else {
+            (blocks, blocks)
+        };
+
         reply.statfs(
             blocks,    // total blocks
-            0,         // free blocks
-            0,         // available blocks
+            free,      // free blocks
+            avail,     // available blocks
             1,         // total inodes
             0,         // free inodes
             bs as u32, // block size

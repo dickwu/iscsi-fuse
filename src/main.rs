@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::block_device::BlockDevice;
 use crate::cache::BlockCache;
-use crate::config::CliArgs;
+use crate::config::{CONFIG_TEMPLATE, CliArgs};
 use crate::fuse_fs::IscsiFuseFs;
 use crate::iscsi_backend::IscsiBackend;
 use iscsi_client_rs::cfg::config::Config;
@@ -28,16 +28,43 @@ fn main() -> Result<()> {
         .init();
 
     let args = CliArgs::parse();
+    let config_path = args.resolved_config();
 
-    // Validate mount point exists
-    if !args.mount_point.exists() {
-        std::fs::create_dir_all(&args.mount_point)
-            .context("Failed to create mount point directory")?;
+    // On first run: if the config doesn't exist, write a template and exit.
+    if !config_path.exists() {
+        std::fs::write(&config_path, CONFIG_TEMPLATE).with_context(|| {
+            format!(
+                "Failed to write template config to {}",
+                config_path.display()
+            )
+        })?;
+        println!(
+            "Created template config at {}.\nEdit it with your iSCSI target details, then run iscsi-fuse again.",
+            config_path.display()
+        );
+        return Ok(());
+    }
+
+    let mount_point = args.resolved_mount_point();
+
+    // Ensure mount point exists. Under /Volumes this requires root, but macFUSE's
+    // mount helper will create it automatically, so a permission error is not fatal.
+    if !mount_point.exists()
+        && let Err(e) = std::fs::create_dir_all(&mount_point)
+    {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            warn!(
+                path = %mount_point.display(),
+                "Cannot create mount point (permission denied) — macFUSE will create it"
+            );
+        } else {
+            return Err(e).context("Failed to create mount point directory");
+        }
     }
 
     // Load iSCSI config
     let iscsi_cfg =
-        Config::load_from_file(&args.config).context("Failed to load iSCSI configuration")?;
+        Config::load_from_file(&config_path).context("Failed to load iSCSI configuration")?;
 
     // Create Tokio runtime
     let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
@@ -72,10 +99,11 @@ fn main() -> Result<()> {
         gid,
     );
 
-    let fuse_config = IscsiFuseFs::fuse_config(args.read_only);
+    let fuse_config = IscsiFuseFs::fuse_config(args.read_only, &args.volume_name);
 
     info!(
-        mount_point = %args.mount_point.display(),
+        mount_point = %mount_point.display(),
+        volume_name = %args.volume_name,
         device_filename = %args.device_filename,
         read_only = args.read_only,
         "Mounting FUSE filesystem"
@@ -93,10 +121,10 @@ fn main() -> Result<()> {
     // It returns when the filesystem is unmounted (e.g. via umount or Ctrl+C).
     info!(
         "FUSE filesystem mounting at {}. Press Ctrl+C to unmount.",
-        args.mount_point.display()
+        mount_point.display()
     );
 
-    fuser::mount2(fuse_fs, &args.mount_point, &fuse_config).context("FUSE mount2 failed")?;
+    fuser::mount2(fuse_fs, &mount_point, &fuse_config).context("FUSE mount2 failed")?;
 
     info!("FUSE session ended, disconnecting iSCSI...");
 

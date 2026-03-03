@@ -2,6 +2,8 @@
 
 Mount iSCSI targets as FUSE filesystems on macOS. Uses [iscsi-client-rs](https://github.com/Masorubka1/iscsi-client-rs) for the iSCSI protocol and [macFUSE](https://macfuse.io/) to expose the target as a virtual disk file.
 
+The volume mounts under `/Volumes` and appears in Finder automatically.
+
 ## Prerequisites
 
 ### macFUSE
@@ -59,23 +61,37 @@ PKG_CONFIG_PATH=/usr/local/lib/pkgconfig cargo build --release
 ## Usage
 
 ```bash
-# Create a mount point
-mkdir -p /tmp/iscsi_mount
+# First run: creates a template config at ~/.iscsi-fuse and exits
+iscsi-fuse
+# -> "Created template config at ~/.iscsi-fuse. Edit it with your iSCSI target details..."
+
+# Edit the config with your target details
+vim ~/.iscsi-fuse
+
+# Mount with defaults (read-write, /Volumes/iscsi, appears in Finder)
+iscsi-fuse
+
+# Mount with a custom volume name
+iscsi-fuse --volume-name "QNAP NAS"
+# -> mounts at /Volumes/QNAP NAS, shows as "QNAP NAS" in Finder
 
 # Mount read-only
-iscsi-fuse --config config.yaml --mount-point /tmp/iscsi_mount --read-only
+iscsi-fuse --read-only
 
-# Mount read-write
-iscsi-fuse --config config.yaml --mount-point /tmp/iscsi_mount
+# Mount at a custom location
+iscsi-fuse --mount-point /tmp/iscsi_mount
+
+# Use a non-default config file
+iscsi-fuse --config /path/to/config.yaml
 
 # The iSCSI target appears as a file:
-ls -la /tmp/iscsi_mount/disk.img
+ls -la /Volumes/iscsi/disk.img
 
 # Read data
-dd if=/tmp/iscsi_mount/disk.img bs=1m count=10 of=/dev/null
+dd if=/Volumes/iscsi/disk.img bs=1m count=10 of=/dev/null
 
 # Unmount
-umount /tmp/iscsi_mount
+umount /Volumes/iscsi
 # Or press Ctrl+C in the iscsi-fuse terminal
 ```
 
@@ -83,8 +99,9 @@ umount /tmp/iscsi_mount
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-c, --config` | (required) | Path to iSCSI YAML config file |
-| `-m, --mount-point` | (required) | FUSE mount point directory |
+| `-c, --config` | `~/.iscsi-fuse` | Path to iSCSI YAML config file |
+| `-m, --mount-point` | `/Volumes/<volume-name>` | FUSE mount point directory |
+| `-n, --volume-name` | `iscsi` | Volume name shown in Finder sidebar |
 | `-l, --lun` | `0` | LUN number on the iSCSI target |
 | `--read-only` | `false` | Mount in read-only mode |
 | `--cache-blocks` | `1024` | LRU cache size in blocks |
@@ -92,7 +109,12 @@ umount /tmp/iscsi_mount
 
 ## Configuration
 
-Create a `config.yaml` with your iSCSI target details:
+The default config file is `~/.iscsi-fuse`. On the first run without a config, iscsi-fuse
+creates a template there automatically — just edit it and run again.
+
+To use a different path, pass `--config /path/to/config.yaml`.
+
+Config format:
 
 ```yaml
 login:
@@ -144,15 +166,14 @@ A launchd plist template is included for automatic mounting:
 # Copy the template
 cp share/com.github.dickwu.iscsi-fuse.plist ~/Library/LaunchAgents/
 
-# Edit the plist to set your config path, mount point, and username
+# Edit the plist to set your username in the log paths
 # (launchd requires absolute paths -- ~ is not expanded)
 vim ~/Library/LaunchAgents/com.github.dickwu.iscsi-fuse.plist
 
-# Create the mount point and log directory
-mkdir -p ~/iscsi
+# Create the log directory
 mkdir -p ~/.local/share/iscsi-fuse
 
-# Load the service (starts immediately)
+# Load the service (starts immediately, mounts at /Volumes/iSCSI Disk)
 launchctl load ~/Library/LaunchAgents/com.github.dickwu.iscsi-fuse.plist
 
 # Check status
@@ -163,6 +184,7 @@ launchctl unload ~/Library/LaunchAgents/com.github.dickwu.iscsi-fuse.plist
 ```
 
 The service will:
+- Mount under `/Volumes` and appear in Finder sidebar
 - Start automatically at login (`RunAtLoad`)
 - Restart on crash (but not on clean unmount)
 - Wait 30 seconds between restart attempts

@@ -9,11 +9,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/iscsi-fuse</string>
-        <string>--config</string>
-        <string>/Users/USERNAME/.config/iscsi-fuse/config.yaml</string>
-        <string>--mount-point</string>
-        <string>/Users/USERNAME/iscsi</string>
-        <string>--read-only</string>
+        <string>--volume-name</string>
+        <string>iSCSI Disk</string>
     </array>
 
     <key>RunAtLoad</key>

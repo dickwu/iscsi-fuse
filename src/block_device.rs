@@ -44,7 +44,7 @@ impl BlockDevice {
 
         let start_lba = offset / bs;
         let end_byte = offset + actual_size as u64;
-        let end_lba = (end_byte + bs - 1) / bs;
+        let end_lba = end_byte.div_ceil(bs);
         let block_count = (end_lba - start_lba) as u32;
 
         let skip = (offset % bs) as usize;
@@ -81,11 +81,11 @@ impl BlockDevice {
         let bs = self.block_size as u64;
         let start_lba = offset / bs;
         let end_byte = offset + actual_len as u64;
-        let end_lba = (end_byte + bs - 1) / bs;
+        let end_lba = end_byte.div_ceil(bs);
         let block_count = (end_lba - start_lba) as u32;
 
         let skip = (offset % bs) as usize;
-        let aligned = skip == 0 && (actual_len % bs as usize) == 0;
+        let aligned = skip == 0 && actual_len.is_multiple_of(bs as usize);
 
         // Serialize writes to prevent RMW races
         let _lock = self.write_lock.lock().unwrap();

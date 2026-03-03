@@ -1,6 +1,6 @@
 [package]
 name = "iscsi-fuse"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -16,3 +16,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 lru = "0.12"
 libc = "0.2"
 ctrlc = "3"
+dirs = "5"
