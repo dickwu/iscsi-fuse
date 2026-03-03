@@ -1,0 +1,37 @@
+login:
+  identity:
+    SessionType: Normal
+    InitiatorName: "iqn.2024-01.com.iscsi-fuse:initiator"
+    InitiatorAlias: "iscsi-fuse-client"
+    TargetName: "iqn.2004-04.com.qnap:ts-873a:iscsi.target-0.6880d1"
+    IsX86: false
+  auth:
+    AuthMethod: None
+  integrity:
+    HeaderDigest: None
+    DataDigest: None
+  flow:
+    MaxRecvDataSegmentLength: 262144
+    MaxBurstLength: 262144
+    FirstBurstLength: 65536
+  write_flow:
+    InitialR2T: true
+    ImmediateData: true
+    MaxOutstandingR2T: 1
+  ordering:
+    DataPDUInOrder: true
+    DataSequenceInOrder: true
+  recovery:
+    ErrorRecoveryLevel: 0
+  timers:
+    DefaultTime2Wait: 0
+    DefaultTime2Retain: 0
+  limits:
+    MaxConnections: 1
+  extensions: {}
+  transport:
+    TargetAddress: "192.168.2.57:3260"
+    TargetPortalGroupTag: 1
+runtime:
+  MaxSessions: 1
+  TimeoutConnection: 30

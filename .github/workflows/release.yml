@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install macFUSE
+        run: brew install --cask macfuse
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Build arm64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64
+        id: build_x86
+        run: cargo build --release --target x86_64-apple-darwin
+        continue-on-error: true
+
+      - name: Create universal binary
+        if: steps.build_x86.outcome == 'success'
+        run: |
+          lipo -create \
+            target/aarch64-apple-darwin/release/iscsi-fuse \
+            target/x86_64-apple-darwin/release/iscsi-fuse \
+            -output iscsi-fuse
+          lipo -info iscsi-fuse
+
+      - name: Use arm64-only binary
+        if: steps.build_x86.outcome != 'success'
+        run: cp target/aarch64-apple-darwin/release/iscsi-fuse iscsi-fuse
+
+      - name: Package
+        run: |
+          ARCH_SUFFIX=${{ steps.build_x86.outcome == 'success' && 'universal' || 'arm64' }}
+          tar czf "iscsi-fuse-${{ github.ref_name }}-macos-${ARCH_SUFFIX}.tar.gz" iscsi-fuse
+          shasum -a 256 iscsi-fuse-*.tar.gz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: iscsi-fuse-*.tar.gz
+          generate_release_notes: true

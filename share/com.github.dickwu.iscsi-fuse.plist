@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.github.dickwu.iscsi-fuse</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/iscsi-fuse</string>
+        <string>--config</string>
+        <string>/Users/USERNAME/.config/iscsi-fuse/config.yaml</string>
+        <string>--mount-point</string>
+        <string>/Users/USERNAME/iscsi</string>
+        <string>--read-only</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/.local/share/iscsi-fuse/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/.local/share/iscsi-fuse/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>iscsi_fuse=info</string>
+    </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>10240</integer>
+    </dict>
+</dict>
+</plist>
