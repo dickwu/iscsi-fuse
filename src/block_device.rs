@@ -1,57 +1,311 @@
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
+use bytes::Bytes;
 use fuser::Errno;
-use tokio::runtime::Handle;
-use tracing::{debug, error};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Interval, interval};
+use tracing::{debug, error, warn};
 
 use crate::cache::BlockCache;
 use crate::iscsi_backend::IscsiBackend;
 
-/// Translates arbitrary byte-offset I/O into block-aligned SCSI commands.
+// ---------------------------------------------------------------------------
+// BlockRequest — the message type sent from FUSE threads to the async worker.
+// ---------------------------------------------------------------------------
+
+enum BlockRequest {
+    Read {
+        offset: u64,
+        size: u32,
+        reply: oneshot::Sender<Result<Bytes, Errno>>,
+    },
+    Write {
+        offset: u64,
+        data: Bytes,
+        reply: oneshot::Sender<Result<u32, Errno>>,
+    },
+    Flush {
+        reply: oneshot::Sender<Result<(), Errno>>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// BlockDevice — the FUSE-facing handle (Clone + Send + Sync).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
 pub struct BlockDevice {
-    backend: Arc<IscsiBackend>,
-    cache: BlockCache,
-    rt_handle: Handle,
+    tx: mpsc::Sender<BlockRequest>,
     block_size: u32,
     total_bytes: u64,
-    /// Mutex to serialize unaligned writes (prevents RMW races on the same block).
-    write_lock: Mutex<()>,
 }
 
 impl BlockDevice {
-    pub fn new(backend: Arc<IscsiBackend>, cache: BlockCache, rt_handle: Handle) -> Self {
-        let block_size = backend.block_size();
-        let total_bytes = backend.total_bytes();
-        Self {
-            backend,
+    /// Create the mpsc channel, spawn the [`BlockDeviceWorker`], and return
+    /// the cloneable handle that FUSE threads use.
+    pub fn spawn(
+        pipeline: Arc<IscsiBackend>,
+        cache: BlockCache,
+        block_size: u32,
+        total_bytes: u64,
+        coalesce_timeout: Duration,
+        coalesce_max_bytes: usize,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(256);
+
+        let worker = BlockDeviceWorker {
+            pipeline,
             cache,
-            rt_handle,
             block_size,
             total_bytes,
-            write_lock: Mutex::new(()),
+            dirty: DirtyMap::new(),
+            coalesce_timeout,
+            coalesce_max_bytes,
+        };
+
+        tokio::spawn(worker.run(rx));
+
+        Self {
+            tx,
+            block_size,
+            total_bytes,
         }
     }
 
-    /// Read `size` bytes starting at `offset`. Handles block alignment.
-    pub fn read_bytes(&self, offset: u64, size: u32) -> Result<Vec<u8>, Errno> {
+    /// Read `size` bytes starting at `offset`.
+    /// Called from a synchronous FUSE thread — uses blocking channel ops.
+    pub fn read_bytes(&self, offset: u64, size: u32) -> Result<Bytes, Errno> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(BlockRequest::Read {
+                offset,
+                size,
+                reply: reply_tx,
+            })
+            .map_err(|_| {
+                error!("BlockDevice worker has shut down (read)");
+                Errno::EIO
+            })?;
+        reply_rx.blocking_recv().map_err(|_| {
+            error!("BlockDevice worker dropped reply (read)");
+            Errno::EIO
+        })?
+    }
+
+    /// Write `data` starting at `offset`.
+    /// Called from a synchronous FUSE thread.
+    pub fn write_bytes(&self, offset: u64, data: &[u8]) -> Result<u32, Errno> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(BlockRequest::Write {
+                offset,
+                data: Bytes::copy_from_slice(data),
+                reply: reply_tx,
+            })
+            .map_err(|_| {
+                error!("BlockDevice worker has shut down (write)");
+                Errno::EIO
+            })?;
+        reply_rx.blocking_recv().map_err(|_| {
+            error!("BlockDevice worker dropped reply (write)");
+            Errno::EIO
+        })?
+    }
+
+    /// Flush all pending dirty writes to the target.
+    pub fn flush(&self) -> Result<(), Errno> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .blocking_send(BlockRequest::Flush { reply: reply_tx })
+            .map_err(|_| {
+                error!("BlockDevice worker has shut down (flush)");
+                Errno::EIO
+            })?;
+        reply_rx.blocking_recv().map_err(|_| {
+            error!("BlockDevice worker dropped reply (flush)");
+            Errno::EIO
+        })?
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+
+    pub fn block_size(&self) -> u32 {
+        self.block_size
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DirtyMap — BTreeMap-based write coalescing buffer.
+// ---------------------------------------------------------------------------
+
+struct DirtyEntry {
+    data: Bytes,
+    block_count: u32,
+}
+
+struct DirtyMap {
+    entries: BTreeMap<u64, DirtyEntry>,
+    total_bytes: usize,
+}
+
+impl DirtyMap {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            total_bytes: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Insert (or overwrite) a dirty entry for the given LBA range.
+    fn insert(&mut self, start_lba: u64, block_count: u32, data: Bytes) {
+        let len = data.len();
+        if let Some(old) = self.entries.insert(
+            start_lba,
+            DirtyEntry {
+                data,
+                block_count,
+            },
+        ) {
+            self.total_bytes -= old.data.len();
+        }
+        self.total_bytes += len;
+    }
+
+    /// Drain all entries in LBA order. Resets total_bytes to 0.
+    fn drain_sorted(&mut self) -> Vec<(u64, Bytes)> {
+        let items: Vec<(u64, Bytes)> = self
+            .entries
+            .iter()
+            .map(|(&lba, entry)| (lba, entry.data.clone()))
+            .collect();
+        self.entries.clear();
+        self.total_bytes = 0;
+        items
+    }
+
+    /// If the read range `[start_lba .. start_lba + block_count)` is fully
+    /// contained within a single dirty entry, return that data. This provides
+    /// read-your-writes semantics.
+    fn read_overlap(
+        &self,
+        start_lba: u64,
+        block_count: u32,
+        block_size: u32,
+    ) -> Option<Bytes> {
+        // Find the entry whose start_lba is <= our start_lba.
+        // BTreeMap::range(..=start_lba).last() gives the highest key <= start_lba.
+        let (&entry_lba, entry) = self.entries.range(..=start_lba).next_back()?;
+
+        let entry_end = entry_lba + entry.block_count as u64;
+        let read_end = start_lba + block_count as u64;
+
+        if start_lba >= entry_lba && read_end <= entry_end {
+            let bs = block_size as usize;
+            let offset_blocks = (start_lba - entry_lba) as usize;
+            let byte_offset = offset_blocks * bs;
+            let byte_len = block_count as usize * bs;
+            let end = byte_offset + byte_len;
+            if end <= entry.data.len() {
+                return Some(entry.data.slice(byte_offset..end));
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BlockDeviceWorker — the async task that services BlockRequests.
+// ---------------------------------------------------------------------------
+
+struct BlockDeviceWorker {
+    pipeline: Arc<IscsiBackend>,
+    cache: BlockCache,
+    block_size: u32,
+    total_bytes: u64,
+    dirty: DirtyMap,
+    coalesce_timeout: Duration,
+    coalesce_max_bytes: usize,
+}
+
+impl BlockDeviceWorker {
+    async fn run(mut self, mut rx: mpsc::Receiver<BlockRequest>) {
+        let mut coalesce_timer: Interval = interval(self.coalesce_timeout);
+        // The first tick completes immediately — consume it.
+        coalesce_timer.tick().await;
+
+        loop {
+            tokio::select! {
+                biased;
+
+                msg = rx.recv() => {
+                    match msg {
+                        Some(BlockRequest::Read { offset, size, reply }) => {
+                            let result = self.handle_read(offset, size).await;
+                            let _ = reply.send(result);
+                        }
+                        Some(BlockRequest::Write { offset, data, reply }) => {
+                            let result = self.handle_write(offset, data).await;
+                            let _ = reply.send(result);
+                        }
+                        Some(BlockRequest::Flush { reply }) => {
+                            let result = self.flush_dirty().await;
+                            let _ = reply.send(result);
+                        }
+                        None => {
+                            // Channel closed — flush remaining dirty data and exit.
+                            debug!("BlockDevice channel closed, flushing remaining dirty data");
+                            if let Err(e) = self.flush_dirty().await {
+                                error!("Final flush failed: {e:?}");
+                            }
+                            return;
+                        }
+                    }
+                }
+
+                _ = coalesce_timer.tick() => {
+                    if !self.dirty.is_empty() {
+                        debug!("Coalesce timer fired, flushing dirty data");
+                        if let Err(e) = self.flush_dirty().await {
+                            warn!("Periodic flush failed: {e:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // -- Read -----------------------------------------------------------------
+
+    async fn handle_read(&mut self, offset: u64, size: u32) -> Result<Bytes, Errno> {
         if size == 0 || offset >= self.total_bytes {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
 
-        // Clamp to device boundary
+        // Clamp to device boundary.
         let actual_size = size.min((self.total_bytes - offset) as u32);
-        let bs = self.block_size as u64;
+        let (start_lba, block_count, skip) =
+            compute_alignment(offset, actual_size as u64, self.block_size);
 
-        let start_lba = offset / bs;
-        let end_byte = offset + actual_size as u64;
-        let end_lba = end_byte.div_ceil(bs);
-        let block_count = (end_lba - start_lba) as u32;
+        // 1. Check dirty map first (read-your-writes).
+        if let Some(dirty_data) = self.dirty.read_overlap(start_lba, block_count, self.block_size)
+        {
+            let end = skip + actual_size as usize;
+            if end <= dirty_data.len() {
+                return Ok(dirty_data.slice(skip..end));
+            }
+        }
 
-        let skip = (offset % bs) as usize;
+        // 2. Cache-aware read via the pipeline.
+        let data = self.read_blocks_with_cache(start_lba, block_count).await?;
 
-        let data = self.read_blocks_with_cache(start_lba, block_count)?;
-
-        // Slice to requested range
         let end = skip + actual_size as usize;
         if end > data.len() {
             error!(
@@ -65,62 +319,16 @@ impl BlockDevice {
             return Err(Errno::EIO);
         }
 
-        Ok(data[skip..end].to_vec())
+        Ok(data.slice(skip..end))
     }
 
-    /// Write `data` starting at `offset`. Handles read-modify-write for unaligned boundaries.
-    pub fn write_bytes(&self, offset: u64, data: &[u8]) -> Result<u32, Errno> {
-        if data.is_empty() || offset >= self.total_bytes {
-            return Ok(0);
-        }
-
-        // Clamp to device boundary
-        let actual_len = data.len().min((self.total_bytes - offset) as usize);
-        let data = &data[..actual_len];
-
-        let bs = self.block_size as u64;
-        let start_lba = offset / bs;
-        let end_byte = offset + actual_len as u64;
-        let end_lba = end_byte.div_ceil(bs);
-        let block_count = (end_lba - start_lba) as u32;
-
-        let skip = (offset % bs) as usize;
-        let aligned = skip == 0 && actual_len.is_multiple_of(bs as usize);
-
-        // Serialize writes to prevent RMW races
-        let _lock = self.write_lock.lock().unwrap();
-
-        let write_data = if aligned {
-            data.to_vec()
-        } else {
-            // Read-modify-write: read existing blocks, overlay new data, write back
-            let existing = self.read_blocks_direct(start_lba, block_count)?;
-            let mut buf = existing;
-            let end_in_buf = skip + actual_len;
-            if end_in_buf > buf.len() {
-                return Err(Errno::EIO);
-            }
-            buf[skip..end_in_buf].copy_from_slice(data);
-            buf
-        };
-
-        // Write to iSCSI target
-        self.rt_handle
-            .block_on(self.backend.scsi_write(start_lba, write_data))
-            .map_err(|e| {
-                error!("SCSI WRITE failed: {e}");
-                Errno::EIO
-            })?;
-
-        // Invalidate cache for written blocks
-        self.cache.invalidate_range(start_lba, block_count as u64);
-
-        debug!(offset, len = actual_len, "Write completed");
-        Ok(actual_len as u32)
-    }
-
-    /// Read blocks, using cache where possible.
-    fn read_blocks_with_cache(&self, start_lba: u64, block_count: u32) -> Result<Vec<u8>, Errno> {
+    /// Read blocks, consulting the LRU cache first and fetching misses from
+    /// the pipeline.
+    async fn read_blocks_with_cache(
+        &self,
+        start_lba: u64,
+        block_count: u32,
+    ) -> Result<Bytes, Errno> {
         let bs = self.block_size as usize;
         let mut result = Vec::with_capacity(block_count as usize * bs);
 
@@ -131,7 +339,7 @@ impl BlockDevice {
                 result.extend_from_slice(&cached);
                 i += 1;
             } else {
-                // Find contiguous miss run
+                // Find contiguous cache-miss run.
                 let miss_start = i;
                 while i < block_count && self.cache.get(start_lba + i as u64).is_none() {
                     i += 1;
@@ -139,10 +347,16 @@ impl BlockDevice {
                 let miss_count = i - miss_start;
                 let miss_lba = start_lba + miss_start as u64;
 
-                // Read the entire miss run in one SCSI READ
-                let data = self.read_blocks_direct(miss_lba, miss_count)?;
+                let data = self
+                    .pipeline
+                    .scsi_read(miss_lba, miss_count)
+                    .await
+                    .map_err(|e| {
+                        error!("SCSI READ failed: {e}");
+                        Errno::EIO
+                    })?;
 
-                // Populate cache with individual blocks
+                // Populate cache with individual blocks.
                 for j in 0..miss_count {
                     let block_start = j as usize * bs;
                     let block_end = block_start + bs;
@@ -156,24 +370,186 @@ impl BlockDevice {
             }
         }
 
-        Ok(result)
+        Ok(Bytes::from(result))
     }
 
-    /// Read blocks directly from iSCSI (no cache).
-    fn read_blocks_direct(&self, start_lba: u64, block_count: u32) -> Result<Vec<u8>, Errno> {
-        self.rt_handle
-            .block_on(self.backend.scsi_read(start_lba, block_count))
-            .map_err(|e| {
-                error!("SCSI READ failed: {e}");
-                Errno::EIO
-            })
+    // -- Write ----------------------------------------------------------------
+
+    async fn handle_write(&mut self, offset: u64, data: Bytes) -> Result<u32, Errno> {
+        if data.is_empty() || offset >= self.total_bytes {
+            return Ok(0);
+        }
+
+        // Clamp to device boundary.
+        let actual_len = data.len().min((self.total_bytes - offset) as usize);
+        let data = data.slice(..actual_len);
+
+        let bs = self.block_size as u64;
+        let (start_lba, block_count, skip) =
+            compute_alignment(offset, actual_len as u64, self.block_size);
+        let aligned = skip == 0 && (actual_len as u64 % bs) == 0;
+
+        let write_data = if aligned {
+            data
+        } else {
+            // Read-modify-write: read existing blocks, overlay new data, write back.
+            let existing = self
+                .pipeline
+                .scsi_read(start_lba, block_count)
+                .await
+                .map_err(|e| {
+                    error!("SCSI READ (RMW) failed: {e}");
+                    Errno::EIO
+                })?;
+            let mut buf = existing;
+            let end_in_buf = skip + actual_len;
+            if end_in_buf > buf.len() {
+                return Err(Errno::EIO);
+            }
+            buf[skip..end_in_buf].copy_from_slice(&data);
+            Bytes::from(buf)
+        };
+
+        // Insert into dirty map.
+        self.dirty.insert(start_lba, block_count, write_data);
+
+        // Invalidate cache for written blocks.
+        self.cache.invalidate_range(start_lba, block_count as u64);
+
+        // If dirty buffer exceeds threshold, flush immediately.
+        if self.dirty.total_bytes >= self.coalesce_max_bytes {
+            debug!(
+                total_dirty = self.dirty.total_bytes,
+                threshold = self.coalesce_max_bytes,
+                "Dirty threshold reached, flushing"
+            );
+            self.flush_dirty().await?;
+        }
+
+        debug!(offset, len = actual_len, "Write completed");
+        Ok(actual_len as u32)
     }
 
-    pub fn total_bytes(&self) -> u64 {
-        self.total_bytes
+    // -- Flush ----------------------------------------------------------------
+
+    async fn flush_dirty(&mut self) -> Result<(), Errno> {
+        if self.dirty.is_empty() {
+            return Ok(());
+        }
+
+        let entries = self.dirty.drain_sorted();
+        debug!(count = entries.len(), "Flushing dirty entries");
+
+        // Submit all dirty entries concurrently.
+        let mut handles = Vec::with_capacity(entries.len());
+        for (lba, data) in entries {
+            let pipeline = self.pipeline.clone();
+            handles.push(tokio::spawn(async move {
+                pipeline.scsi_write(lba, data.to_vec()).await
+            }));
+        }
+
+        // Await all.
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    error!("SCSI WRITE (flush) failed: {e}");
+                    return Err(Errno::EIO);
+                }
+                Err(e) => {
+                    error!("Flush task panicked: {e}");
+                    return Err(Errno::EIO);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alignment helper
+// ---------------------------------------------------------------------------
+
+/// Compute block-aligned LBA range and byte skip for a given byte offset/size.
+pub fn compute_alignment(offset: u64, size: u64, block_size: u32) -> (u64, u32, usize) {
+    let bs = block_size as u64;
+    let start_lba = offset / bs;
+    let end_lba = (offset + size).div_ceil(bs);
+    let block_count = (end_lba - start_lba) as u32;
+    let skip = (offset % bs) as usize;
+    (start_lba, block_count, skip)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dirty_map_insert_and_drain() {
+        let mut dm = DirtyMap::new();
+        dm.insert(10, 2, Bytes::from(vec![0xAA; 8192]));
+        dm.insert(5, 1, Bytes::from(vec![0xBB; 4096]));
+
+        assert_eq!(dm.total_bytes, 8192 + 4096);
+
+        let drained = dm.drain_sorted();
+        assert_eq!(drained.len(), 2);
+        // Sorted by LBA: 5 comes before 10.
+        assert_eq!(drained[0].0, 5);
+        assert_eq!(drained[1].0, 10);
+        assert_eq!(dm.total_bytes, 0);
+        assert!(dm.is_empty());
     }
 
-    pub fn block_size(&self) -> u32 {
-        self.block_size
+    #[test]
+    fn test_dirty_map_read_overlap_full() {
+        let mut dm = DirtyMap::new();
+        let block_size = 512u32;
+        // Insert 4 blocks starting at LBA 10.
+        let data = Bytes::from(vec![0xCC; 4 * 512]);
+        dm.insert(10, 4, data.clone());
+
+        // Read LBA 11..13 (2 blocks), fully within the dirty entry.
+        let result = dm.read_overlap(11, 2, block_size);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.len(), 2 * 512);
+        // Should be bytes from offset 512..1536 of the original data.
+        assert_eq!(&result[..], &data[512..512 + 2 * 512]);
+    }
+
+    #[test]
+    fn test_dirty_map_read_no_overlap() {
+        let mut dm = DirtyMap::new();
+        let block_size = 512u32;
+        dm.insert(0, 2, Bytes::from(vec![0xDD; 1024]));
+
+        // Read at LBA 100 — no overlap.
+        let result = dm.read_overlap(100, 1, block_size);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_block_device_alignment() {
+        // offset=100, size=200, bs=4096 => lba=0, count=1, skip=100
+        let (lba, count, skip) = compute_alignment(100, 200, 4096);
+        assert_eq!(lba, 0);
+        assert_eq!(count, 1);
+        assert_eq!(skip, 100);
+    }
+
+    #[test]
+    fn test_block_device_alignment_spanning() {
+        // offset=4000, size=200, bs=4096 => lba=0, count=2, skip=4000
+        let (lba, count, skip) = compute_alignment(4000, 200, 4096);
+        assert_eq!(lba, 0);
+        assert_eq!(count, 2);
+        assert_eq!(skip, 4000);
     }
 }
