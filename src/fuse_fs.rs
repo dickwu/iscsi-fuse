@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use fuser::{
     BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
     Generation, INodeNo, KernelConfig, LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData,
@@ -60,7 +61,7 @@ impl IscsiFuseFs {
 
         let mut config = Config::default();
         config.mount_options = options;
-        config.n_threads = Some(1);
+        config.n_threads = Some(num_cpus::get() as u32);
         config
     }
 
@@ -277,12 +278,37 @@ impl Filesystem for IscsiFuseFs {
     fn flush(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         _fh: FileHandle,
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        reply.ok();
+        if ino == DEVICE_INODE && !self.read_only {
+            match self.block_device.flush() {
+                Ok(()) => reply.ok(),
+                Err(errno) => reply.error(errno),
+            }
+        } else {
+            reply.ok();
+        }
+    }
+
+    fn fsync(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        if ino == DEVICE_INODE && !self.read_only {
+            match self.block_device.flush() {
+                Ok(()) => reply.ok(),
+                Err(errno) => reply.error(errno),
+            }
+        } else {
+            reply.ok();
+        }
     }
 
     fn release(
@@ -296,5 +322,36 @@ impl Filesystem for IscsiFuseFs {
         reply: ReplyEmpty,
     ) {
         reply.ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fuse_config_multi_threaded() {
+        let config = IscsiFuseFs::fuse_config(false, "test-vol");
+        assert!(config.n_threads.unwrap() >= 1);
+    }
+
+    #[test]
+    fn test_fuse_config_read_only() {
+        let config = IscsiFuseFs::fuse_config(true, "test-vol");
+        let has_ro = config
+            .mount_options
+            .iter()
+            .any(|o| matches!(o, MountOption::RO));
+        assert!(has_ro);
+    }
+
+    #[test]
+    fn test_fuse_config_read_write() {
+        let config = IscsiFuseFs::fuse_config(false, "test-vol");
+        let has_rw = config
+            .mount_options
+            .iter()
+            .any(|o| matches!(o, MountOption::RW));
+        assert!(has_rw);
     }
 }
