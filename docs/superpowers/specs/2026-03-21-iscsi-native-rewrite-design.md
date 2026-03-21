@@ -25,7 +25,7 @@
 │  FUSE (fuser, multi-threaded, N = num_cpus)                  │
 │  fuse_fs.rs — read/write/readdir/statfs callbacks            │
 └────────────────────────┬─────────────────────────────────────┘
-                         │ crossbeam channel (request/response)
+                         │ tokio mpsc channel (request/response)
 ┌────────────────────────▼─────────────────────────────────────┐
 │  Block Device Layer                                          │
 │  block_device.rs — byte-offset → LBA translation,            │
@@ -153,13 +153,13 @@ Owns the TCP connection. Only module that touches the socket.
 - TCP keepalive: `TCP_KEEPIDLE=30s`, `TCP_KEEPINTVL=5s`, `TCP_KEEPCNT=3`
 
 **Core methods:**
-- `send_pdu(&mut self, pdu: &Pdu)` — vectored write (`write_vectored`) of BHS + AHS + header digest + data + data digest. Single syscall, no memcpy.
+- `send_pdu(&mut self, pdu: &Pdu)` — vectored write (`write_vectored`) of BHS + AHS + header digest + data + data digest. Avoids assembling a contiguous PDU buffer — digest values are stack-allocated `[u8; 4]` referenced by iovec. Note: `BufWriter` may copy into its userspace buffer before syscall; the win is avoiding a separate PDU assembly allocation.
 - `recv_pdu(&mut self) -> Result<Pdu>` — read exactly 48 bytes for BHS, verify header digest, read data segment into `BytesMut`, verify data digest, `.freeze()` to `Bytes`.
 - `enable_digests(&mut self, config: DigestConfig)` — called after login negotiation.
 
 **Design decisions:**
 - `TcpStream` split into owned halves — concurrent send (from command submission) and recv (from receiver task)
-- Vectored writes avoid memcpy of BHS + data into contiguous buffer
+- Vectored writes avoid assembling a contiguous PDU buffer (BHS + data + digests stay in separate allocations)
 - Digests start disabled (login phase), enabled after negotiation
 - Data arrives as `Bytes` — flows to cache without copying
 
@@ -194,20 +194,29 @@ Two-phase login: Security Negotiation → Operational Negotiation → Full Featu
 Central coordinator — sequence numbers, ITT allocation, transport ownership.
 
 **Types:**
-- `Session` — holds `Mutex<TransportWriter>` (for multi-threaded command submission), `NegotiatedParams`, `SessionState`
+- `Session` — holds `Mutex<TransportWriter>` (for multi-threaded command submission AND R2T Data-Out sends from receiver task), `NegotiatedParams`, `SessionState`
 - `SessionState` — atomics: `cmd_sn`, `exp_stat_sn`, `exp_cmd_sn`, `max_cmd_sn` (lock-free hot path)
-- `IttPool` — `AtomicU128` bitmap for 128 ITT slots + `oneshot::Sender` completion channels
+- `IttPool` — two `AtomicU64` values as a 128-bit bitmap for ITT slots + `Mutex<[Option<oneshot::Sender>; 128]>` completion channels + `Mutex<HashMap<u32, Bytes>>` for registered write data per ITT
 
-**ITT allocation (lock-free):**
-- `alloc() -> Option<(u32, oneshot::Receiver)>` — CAS on `AtomicU128`, find first free bit
-- `free(itt)` — atomic bit clear
+**Note on `AtomicU128`:** `AtomicU128` is not stabilized in Rust. Use two `AtomicU64` values (`slots_lo` for ITTs 0-63, `slots_hi` for ITTs 64-127). Allocation checks `slots_lo` first, then `slots_hi`. Each is a single CAS operation. Marginally less elegant but fully stable.
+
+**ITT allocation:**
+- `alloc() -> Option<(u32, oneshot::Receiver)>` — CAS on `AtomicU64` pair, find first free bit
+- `free(itt)` — atomic bit clear on the appropriate half
 - `complete(itt, response)` — send on oneshot, free slot
+
+**Write data registration for R2T handling:**
+- When a SCSI WRITE command is submitted, the caller registers the full write data `Bytes` in the `IttPool` keyed by ITT via `register_write_data(itt, data)`.
+- The receiver task, upon receiving an R2T, looks up the write data by ITT, slices the requested range (`data.slice(offset..offset+len)` — zero-copy), and sends Data-Out PDUs.
+- The receiver task acquires the `Mutex<TransportWriter>` to send Data-Out PDUs. This briefly blocks new command submissions but is necessary for correctness. Since Data-Out sends are fast (just memcpy to socket buffer), contention is minimal. The receiver does NOT hold the lock across the entire R2T burst — it acquires/releases per Data-Out PDU.
+- On ITT completion or session teardown, the registered write data is preserved in the recovery manager's pending queue (see Section 8) for retry after reconnection.
 
 **Command submission:**
 1. Wait for CmdSN window space (serial number arithmetic, `cmd_sn <= max_cmd_sn`)
 2. Allocate ITT (wait if all 128 in use — backpressure)
 3. Stamp CmdSN (atomic fetch_add) and ExpStatSN (atomic load)
 4. Build PDU, send via transport writer
+5. For writes: register write data `Bytes` in IttPool keyed by ITT
 
 **Response receiver (dedicated tokio task):**
 - Reads PDUs in a loop via `transport.recv_pdu()`
@@ -215,15 +224,16 @@ Central coordinator — sequence numbers, ITT allocation, transport ownership.
 - Routes by opcode:
   - `ScsiResponse` → complete ITT with status + sense
   - `ScsiDataIn` → accumulate data by buffer offset; if S bit set, complete ITT
-  - `R2T` → send Data-Out PDUs using registered write data
+  - `R2T` → acquire writer lock, send Data-Out PDUs using registered write data (lock per PDU, not per burst), release lock
   - `NopIn` → respond with NOP-Out (keepalive)
   - `AsyncMessage` / `Reject` → log and handle
 
 **Design decisions:**
 - Atomics for sequence numbers — no mutex on hot path
-- `AtomicU128` for ITT bitmap — single CAS for alloc/free
+- Two `AtomicU64` for ITT bitmap — stable Rust, single CAS per half
 - `oneshot::channel` per command — zero-cost completion
-- Transport split: writer behind Mutex, reader in dedicated task
+- Transport writer behind `Mutex`, shared between command submission and R2T Data-Out sends. Lock granularity is per-PDU (not per-burst) to minimize contention.
+- Write data `Bytes` registered per ITT — preserved across session recovery for retry
 
 ### 5. SCSI Commands (`iscsi/command.rs`)
 
@@ -255,7 +265,7 @@ Pure functions — CDB builders and response parsers. No I/O, no state.
 Throughput engine — manages 128 concurrent commands.
 
 **Read path:**
-- `scsi_read(lba, block_count)` — splits into chunks sized by `max_burst_length / block_size`, submits ALL chunks concurrently. ITT pool provides natural backpressure at 128. Collects results in LBA order, returns `Bytes`.
+- `scsi_read(lba, block_count)` — splits into chunks. Chunk size heuristic: `max_burst_length / block_size` as an upper bound for EDTL per command (most targets accept any EDTL and split into Data-In PDUs internally; MaxBurstLength is used as a conservative practical limit). Submits ALL chunks concurrently. ITT pool provides natural backpressure at 128. Collects results in LBA order, returns `Bytes`.
 - UNIT ATTENTION retry on single-read level.
 - 30s timeout per command.
 
@@ -293,10 +303,10 @@ ERL=0 + automatic session recovery. Based on research: no production initiator i
 - If no NOP-In within 5s → connection dead → trigger recovery.
 
 **Session recovery flow:**
-1. Drain outstanding commands into pending queue
+1. Drain outstanding commands into pending queue. For write commands, the write data `Bytes` is preserved — it was registered in the IttPool per ITT (see Section 4) and is moved into the `PendingCommand` struct along with the CDB, LUN, and reply channel.
 2. Reconnect: new TCP connection + fresh login (TSIH=0, new session)
 3. TEST UNIT READY to clear UNIT ATTENTION
-4. Retry queued commands (reads always safe; writes safe because same data to same LBA)
+4. Retry queued commands: reads are always safe to retry (idempotent); writes are safe because the same data is written to the same LBA (the `Bytes` data is preserved from step 1).
 5. Expire commands that exceeded replacement_timeout → fail with EIO
 
 **CRC32C digest errors:**
@@ -393,7 +403,7 @@ Channel-based dispatch from sync FUSE threads to async iSCSI pipeline.
 - `DirtyMap` (BTreeMap by LBA): buffers writes, merges adjacent ranges
 - Flush triggers: 5ms timer OR 1MB accumulated OR explicit fsync
 - FUSE write returns after buffering (fast), SCSI WRITE on flush
-- Read-your-writes: reads check dirty map before cache
+- Read-your-writes consistency: reads check dirty map FIRST. If the read range overlaps dirty data, the worker merges dirty bytes with cache/disk data for the non-overlapping portions into a single `Bytes` response. The dirty data is returned directly (no flush required) — this is a memory-only merge, not a disk round-trip. For fully overlapping reads (entire range is dirty), cache/disk is not consulted at all.
 
 **Bounded channel (256):** backpressure if FUSE generates faster than iSCSI processes.
 
@@ -433,7 +443,6 @@ tokio = { version = "1", features = ["full"] }
 bytes = "1"
 crc32c = "0.6"
 socket2 = "0.6"
-smallvec = "1"
 moka = { version = "0.12", features = ["future"] }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -447,7 +456,7 @@ ctrlc = "3"
 dirs = "6"
 ```
 
-**Removed:** `iscsi-client-rs`, `lru`, `tokio-util`
+**Removed:** `iscsi-client-rs`, `lru`, `tokio-util`, `smallvec` (not needed — iovec slices use stack arrays)
 
 ## Performance Targets
 
