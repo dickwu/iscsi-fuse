@@ -212,6 +212,16 @@ impl Bhs {
         u32::from_be_bytes(self.raw[28..32].try_into().unwrap())
     }
 
+    /// Login Response Status-Class (raw[36]).
+    pub fn login_status_class(&self) -> u8 {
+        self.raw[36]
+    }
+
+    /// Login Response Status-Detail (raw[37]).
+    pub fn login_status_detail(&self) -> u8 {
+        self.raw[37]
+    }
+
     // -----------------------------------------------------------------------
     // Builder helpers (private)
     // -----------------------------------------------------------------------
