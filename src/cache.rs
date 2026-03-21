@@ -50,9 +50,9 @@ pub struct BlockCache {
 impl BlockCache {
     /// Create a new `BlockCache`.
     ///
-    /// * `size_mb`    – maximum cache size in megabytes.
-    /// * `block_size` – device block size in bytes (e.g. 512).
-    /// * `ra_max_kb`  – maximum readahead window in kilobytes (e.g. 512).
+    /// * `size_mb`    -- maximum cache size in megabytes.
+    /// * `block_size` -- device block size in bytes (e.g. 512).
+    /// * `ra_max_kb`  -- maximum readahead window in kilobytes (e.g. 512).
     pub fn new(size_mb: usize, block_size: u32, ra_max_kb: usize) -> Self {
         let chunk_bytes: u64 = 64 * 1024; // 64 KB
         let max_capacity = (size_mb as u64 * 1024 * 1024) / chunk_bytes;
@@ -150,12 +150,12 @@ impl BlockCache {
             .store(self.readahead.ra_min_blocks, Ordering::Relaxed);
     }
 
-    /// Expose current readahead window (blocks) — mainly for tests.
+    /// Expose current readahead window (blocks) -- mainly for tests.
     pub fn readahead_window_blocks(&self) -> u32 {
         self.readahead.ra_window.load(Ordering::Relaxed)
     }
 
-    /// Expose minimum readahead window (blocks) — mainly for tests.
+    /// Expose minimum readahead window (blocks) -- mainly for tests.
     pub fn readahead_min_blocks(&self) -> u32 {
         self.readahead.ra_min_blocks
     }
@@ -177,7 +177,7 @@ impl BlockCache {
         Fut: Future<Output = Result<Bytes>> + Send + 'static,
     {
         let prev_lba = self.readahead.last_lba.load(Ordering::Relaxed);
-        let _prev_count = block_count; // approximation — stores last count below
+        let _prev_count = block_count; // approximation -- stores last count below
 
         // Update last-seen LBA (store start_lba for next comparison).
         self.readahead.last_lba.store(start_lba, Ordering::Relaxed);
@@ -187,7 +187,7 @@ impl BlockCache {
             prev_lba != u64::MAX && start_lba == prev_lba.wrapping_add(block_count as u64);
 
         if !is_sequential {
-            // Random jump — reset window.
+            // Random jump -- reset window.
             self.readahead
                 .ra_window
                 .store(self.readahead.ra_min_blocks, Ordering::Relaxed);
@@ -197,7 +197,7 @@ impl BlockCache {
             return;
         }
 
-        // Sequential — grow window (double, capped).
+        // Sequential -- grow window (double, capped).
         let current_window = self.readahead.ra_window.load(Ordering::Relaxed);
         let new_window = (current_window * 2).min(self.readahead.ra_max_blocks);
         self.readahead
@@ -231,7 +231,7 @@ impl BlockCache {
                 // `tokio::spawn` because `BlockCache` is not `'static`.
                 // Instead we copy the pointer and reconstruct a reference.
                 // This is safe as long as `BlockCache` outlives the spawned
-                // task — which is guaranteed because the cache lives for the
+                // task -- which is guaranteed because the cache lives for the
                 // lifetime of the program.
                 tokio::spawn(async move {
                     let end_lba = prefetch_lba + prefetch_blocks as u64;
@@ -318,11 +318,11 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let fetch = make_fetch(counter.clone(), 512);
 
-        // First read — populates cache.
+        // First read -- populates cache.
         let _d1 = cache.read_blocks(0, 1, fetch.clone()).await.unwrap();
         let calls_after_first = counter.load(Ordering::SeqCst);
 
-        // Second read of the same range — should hit cache.
+        // Second read of the same range -- should hit cache.
         let d2 = cache.read_blocks(0, 1, fetch).await.unwrap();
         let calls_after_second = counter.load(Ordering::SeqCst);
 
@@ -349,7 +349,7 @@ mod tests {
         // Force moka to process the invalidation.
         cache.inner.run_pending_tasks().await;
 
-        // Read again — should miss.
+        // Read again -- should miss.
         let _ = cache.read_blocks(0, 1, fetch).await.unwrap();
         let calls_after = counter.load(Ordering::SeqCst);
 

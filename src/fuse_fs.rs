@@ -1,7 +1,6 @@
 use std::ffi::OsStr;
 use std::time::{Duration, SystemTime};
 
-use bytes::Bytes;
 use fuser::{
     BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
     Generation, INodeNo, KernelConfig, LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData,
@@ -61,7 +60,7 @@ impl IscsiFuseFs {
 
         let mut config = Config::default();
         config.mount_options = options;
-        config.n_threads = Some(num_cpus::get() as u32);
+        config.n_threads = Some(num_cpus::get());
         config
     }
 

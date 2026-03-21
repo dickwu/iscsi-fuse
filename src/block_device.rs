@@ -9,10 +9,10 @@ use tokio::time::{Interval, interval};
 use tracing::{debug, error, warn};
 
 use crate::cache::BlockCache;
-use crate::iscsi_backend::IscsiBackend;
+use crate::iscsi::Pipeline;
 
 // ---------------------------------------------------------------------------
-// BlockRequest — the message type sent from FUSE threads to the async worker.
+// BlockRequest -- the message type sent from FUSE threads to the async worker.
 // ---------------------------------------------------------------------------
 
 enum BlockRequest {
@@ -32,7 +32,7 @@ enum BlockRequest {
 }
 
 // ---------------------------------------------------------------------------
-// BlockDevice — the FUSE-facing handle (Clone + Send + Sync).
+// BlockDevice -- the FUSE-facing handle (Clone + Send + Sync).
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -46,7 +46,7 @@ impl BlockDevice {
     /// Create the mpsc channel, spawn the [`BlockDeviceWorker`], and return
     /// the cloneable handle that FUSE threads use.
     pub fn spawn(
-        pipeline: Arc<IscsiBackend>,
+        pipeline: Arc<Pipeline>,
         cache: BlockCache,
         block_size: u32,
         total_bytes: u64,
@@ -75,7 +75,7 @@ impl BlockDevice {
     }
 
     /// Read `size` bytes starting at `offset`.
-    /// Called from a synchronous FUSE thread — uses blocking channel ops.
+    /// Called from a synchronous FUSE thread -- uses blocking channel ops.
     pub fn read_bytes(&self, offset: u64, size: u32) -> Result<Bytes, Errno> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -139,7 +139,7 @@ impl BlockDevice {
 }
 
 // ---------------------------------------------------------------------------
-// DirtyMap — BTreeMap-based write coalescing buffer.
+// DirtyMap -- BTreeMap-based write coalescing buffer.
 // ---------------------------------------------------------------------------
 
 struct DirtyEntry {
@@ -167,13 +167,10 @@ impl DirtyMap {
     /// Insert (or overwrite) a dirty entry for the given LBA range.
     fn insert(&mut self, start_lba: u64, block_count: u32, data: Bytes) {
         let len = data.len();
-        if let Some(old) = self.entries.insert(
-            start_lba,
-            DirtyEntry {
-                data,
-                block_count,
-            },
-        ) {
+        if let Some(old) = self
+            .entries
+            .insert(start_lba, DirtyEntry { data, block_count })
+        {
             self.total_bytes -= old.data.len();
         }
         self.total_bytes += len;
@@ -194,12 +191,7 @@ impl DirtyMap {
     /// If the read range `[start_lba .. start_lba + block_count)` is fully
     /// contained within a single dirty entry, return that data. This provides
     /// read-your-writes semantics.
-    fn read_overlap(
-        &self,
-        start_lba: u64,
-        block_count: u32,
-        block_size: u32,
-    ) -> Option<Bytes> {
+    fn read_overlap(&self, start_lba: u64, block_count: u32, block_size: u32) -> Option<Bytes> {
         // Find the entry whose start_lba is <= our start_lba.
         // BTreeMap::range(..=start_lba).last() gives the highest key <= start_lba.
         let (&entry_lba, entry) = self.entries.range(..=start_lba).next_back()?;
@@ -222,11 +214,11 @@ impl DirtyMap {
 }
 
 // ---------------------------------------------------------------------------
-// BlockDeviceWorker — the async task that services BlockRequests.
+// BlockDeviceWorker -- the async task that services BlockRequests.
 // ---------------------------------------------------------------------------
 
 struct BlockDeviceWorker {
-    pipeline: Arc<IscsiBackend>,
+    pipeline: Arc<Pipeline>,
     cache: BlockCache,
     block_size: u32,
     total_bytes: u64,
@@ -238,7 +230,7 @@ struct BlockDeviceWorker {
 impl BlockDeviceWorker {
     async fn run(mut self, mut rx: mpsc::Receiver<BlockRequest>) {
         let mut coalesce_timer: Interval = interval(self.coalesce_timeout);
-        // The first tick completes immediately — consume it.
+        // The first tick completes immediately -- consume it.
         coalesce_timer.tick().await;
 
         loop {
@@ -260,7 +252,7 @@ impl BlockDeviceWorker {
                             let _ = reply.send(result);
                         }
                         None => {
-                            // Channel closed — flush remaining dirty data and exit.
+                            // Channel closed -- flush remaining dirty data and exit.
                             debug!("BlockDevice channel closed, flushing remaining dirty data");
                             if let Err(e) = self.flush_dirty().await {
                                 error!("Final flush failed: {e:?}");
@@ -295,7 +287,9 @@ impl BlockDeviceWorker {
             compute_alignment(offset, actual_size as u64, self.block_size);
 
         // 1. Check dirty map first (read-your-writes).
-        if let Some(dirty_data) = self.dirty.read_overlap(start_lba, block_count, self.block_size)
+        if let Some(dirty_data) = self
+            .dirty
+            .read_overlap(start_lba, block_count, self.block_size)
         {
             let end = skip + actual_size as usize;
             if end <= dirty_data.len() {
@@ -329,48 +323,17 @@ impl BlockDeviceWorker {
         start_lba: u64,
         block_count: u32,
     ) -> Result<Bytes, Errno> {
-        let bs = self.block_size as usize;
-        let mut result = Vec::with_capacity(block_count as usize * bs);
-
-        let mut i = 0u32;
-        while i < block_count {
-            let lba = start_lba + i as u64;
-            if let Some(cached) = self.cache.get(lba) {
-                result.extend_from_slice(&cached);
-                i += 1;
-            } else {
-                // Find contiguous cache-miss run.
-                let miss_start = i;
-                while i < block_count && self.cache.get(start_lba + i as u64).is_none() {
-                    i += 1;
-                }
-                let miss_count = i - miss_start;
-                let miss_lba = start_lba + miss_start as u64;
-
-                let data = self
-                    .pipeline
-                    .scsi_read(miss_lba, miss_count)
-                    .await
-                    .map_err(|e| {
-                        error!("SCSI READ failed: {e}");
-                        Errno::EIO
-                    })?;
-
-                // Populate cache with individual blocks.
-                for j in 0..miss_count {
-                    let block_start = j as usize * bs;
-                    let block_end = block_start + bs;
-                    if block_end <= data.len() {
-                        self.cache
-                            .put(miss_lba + j as u64, data[block_start..block_end].to_vec());
-                    }
-                }
-
-                result.extend_from_slice(&data);
-            }
-        }
-
-        Ok(Bytes::from(result))
+        let pipeline = self.pipeline.clone();
+        self.cache
+            .read_blocks(start_lba, block_count, move |lba, count| {
+                let p = pipeline.clone();
+                async move { p.scsi_read(lba, count).await }
+            })
+            .await
+            .map_err(|e| {
+                error!("SCSI READ failed: {e}");
+                Errno::EIO
+            })
     }
 
     // -- Write ----------------------------------------------------------------
@@ -401,7 +364,7 @@ impl BlockDeviceWorker {
                     error!("SCSI READ (RMW) failed: {e}");
                     Errno::EIO
                 })?;
-            let mut buf = existing;
+            let mut buf = existing.to_vec();
             let end_in_buf = skip + actual_len;
             if end_in_buf > buf.len() {
                 return Err(Errno::EIO);
@@ -414,7 +377,7 @@ impl BlockDeviceWorker {
         self.dirty.insert(start_lba, block_count, write_data);
 
         // Invalidate cache for written blocks.
-        self.cache.invalidate_range(start_lba, block_count as u64);
+        self.cache.invalidate_range(start_lba, block_count).await;
 
         // If dirty buffer exceeds threshold, flush immediately.
         if self.dirty.total_bytes >= self.coalesce_max_bytes {
@@ -444,9 +407,9 @@ impl BlockDeviceWorker {
         let mut handles = Vec::with_capacity(entries.len());
         for (lba, data) in entries {
             let pipeline = self.pipeline.clone();
-            handles.push(tokio::spawn(async move {
-                pipeline.scsi_write(lba, data.to_vec()).await
-            }));
+            handles.push(tokio::spawn(
+                async move { pipeline.scsi_write(lba, data).await },
+            ));
         }
 
         // Await all.
@@ -530,7 +493,7 @@ mod tests {
         let block_size = 512u32;
         dm.insert(0, 2, Bytes::from(vec![0xDD; 1024]));
 
-        // Read at LBA 100 — no overlap.
+        // Read at LBA 100 -- no overlap.
         let result = dm.read_overlap(100, 1, block_size);
         assert!(result.is_none());
     }
