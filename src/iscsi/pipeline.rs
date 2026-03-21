@@ -183,12 +183,7 @@ impl Pipeline {
     }
 
     /// Issue a single SCSI WRITE command (no chunking).
-    async fn scsi_write_single(
-        &self,
-        lba: u64,
-        block_count: u32,
-        data: Bytes,
-    ) -> Result<()> {
+    async fn scsi_write_single(&self, lba: u64, block_count: u32, data: Bytes) -> Result<()> {
         scsi_write_single_inner(
             &self.session,
             self.lun,

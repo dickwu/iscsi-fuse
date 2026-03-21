@@ -79,10 +79,7 @@ impl NegotiatedParams {
             "MaxRecvDataSegmentLength={}\0",
             defaults.max_recv_data_segment_length
         ));
-        text.push_str(&format!(
-            "MaxBurstLength={}\0",
-            defaults.max_burst_length
-        ));
+        text.push_str(&format!("MaxBurstLength={}\0", defaults.max_burst_length));
         text.push_str(&format!(
             "FirstBurstLength={}\0",
             defaults.first_burst_length
@@ -99,10 +96,7 @@ impl NegotiatedParams {
             "MaxOutstandingR2T={}\0",
             defaults.max_outstanding_r2t
         ));
-        text.push_str(&format!(
-            "MaxConnections={}\0",
-            defaults.max_connections
-        ));
+        text.push_str(&format!("MaxConnections={}\0", defaults.max_connections));
         text.push_str(&format!(
             "DataPDUInOrder={}\0",
             if defaults.data_pdu_in_order {
@@ -295,14 +289,12 @@ impl LoginManager {
         let data = Bytes::from(text.into_bytes());
 
         let mut bhs = Bhs::build_login_request(
-            self.isid,
-            0,   // TSIH=0 for new session
-            cid,
-            1,   // ITT
-            1,   // CmdSN
-            0,   // ExpStatSN
-            0,   // CSG=SecurityNegotiation
-            1,   // NSG=LoginOperationalNegotiation
+            self.isid, 0, // TSIH=0 for new session
+            cid, 1,    // ITT
+            1,    // CmdSN
+            0,    // ExpStatSN
+            0,    // CSG=SecurityNegotiation
+            1,    // NSG=LoginOperationalNegotiation
             true, // Transit
         );
         bhs.data_segment_length = data.len() as u32;
@@ -351,14 +343,11 @@ impl LoginManager {
         let data = Bytes::from(text.into_bytes());
 
         let mut bhs = Bhs::build_login_request(
-            self.isid,
-            tsih,
-            cid,
-            2,   // ITT
-            2,   // CmdSN
-            1,   // ExpStatSN
-            1,   // CSG=LoginOperationalNegotiation
-            3,   // NSG=FullFeaturePhase
+            self.isid, tsih, cid, 2,    // ITT
+            2,    // CmdSN
+            1,    // ExpStatSN
+            1,    // CSG=LoginOperationalNegotiation
+            3,    // NSG=FullFeaturePhase
             true, // Transit
         );
         bhs.data_segment_length = data.len() as u32;
@@ -502,7 +491,10 @@ mod tests {
 
     #[test]
     fn test_build_security_text() {
-        let mgr = LoginManager::new("iqn.2024.com.example:initiator", "iqn.2024.com.example:target");
+        let mgr = LoginManager::new(
+            "iqn.2024.com.example:initiator",
+            "iqn.2024.com.example:target",
+        );
         let text = mgr.build_security_text();
         assert!(text.contains("InitiatorName=iqn.2024.com.example:initiator\0"));
         assert!(text.contains("TargetName=iqn.2024.com.example:target\0"));

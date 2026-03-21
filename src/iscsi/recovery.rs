@@ -7,8 +7,8 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::iscsi::session::{PduResponse, Session};
 use crate::iscsi::login::LoginManager;
+use crate::iscsi::session::{PduResponse, Session};
 
 // ---------------------------------------------------------------------------
 // RecoveryConfig
@@ -212,10 +212,7 @@ impl RecoveryManager {
                 }
 
                 if !got_reply {
-                    warn!(
-                        "NOP-Out timeout: no response within {:?}",
-                        timeout
-                    );
+                    warn!("NOP-Out timeout: no response within {:?}", timeout);
                 }
             }
         })
