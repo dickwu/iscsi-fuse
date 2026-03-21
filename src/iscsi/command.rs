@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{bail, ensure};
 
 // ---------------------------------------------------------------------------
@@ -287,7 +289,7 @@ pub fn is_unit_attention(sense: &SenseData) -> bool {
 pub fn is_retryable(status: ScsiStatus, sense: Option<&SenseData>) -> bool {
     match status {
         ScsiStatus::Busy | ScsiStatus::TaskSetFull => true,
-        ScsiStatus::CheckCondition => sense.is_some_and(|s| is_unit_attention(s)),
+        ScsiStatus::CheckCondition => sense.is_some_and(is_unit_attention),
         _ => false,
     }
 }

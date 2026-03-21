@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

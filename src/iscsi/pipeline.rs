@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -347,24 +349,23 @@ async fn scsi_read_single_inner(
         }
         ScsiStatus::CheckCondition => {
             // Check for UNIT ATTENTION and retry once.
-            if let Some(ref sense_bytes) = response.sense {
-                if let Ok(sense) = command::parse_sense_data(sense_bytes) {
-                    if command::is_unit_attention(&sense) {
-                        warn!(lba, block_count, "UNIT ATTENTION on read, retrying");
-                        let (_itt2, rx2) = session
-                            .submit_command(&cdb, lun, edtl, true, false, None)
-                            .await
-                            .context("retry SCSI READ after UNIT ATTENTION")?;
+            if let Some(ref sense_bytes) = response.sense
+                && let Ok(sense) = command::parse_sense_data(sense_bytes)
+                && command::is_unit_attention(&sense)
+            {
+                warn!(lba, block_count, "UNIT ATTENTION on read, retrying");
+                let (_itt2, rx2) = session
+                    .submit_command(&cdb, lun, edtl, true, false, None)
+                    .await
+                    .context("retry SCSI READ after UNIT ATTENTION")?;
 
-                        let response2 = tokio::time::timeout(READ_TIMEOUT, rx2)
-                            .await
-                            .context("SCSI READ retry timed out")?
-                            .context("SCSI READ retry channel closed")?;
+                let response2 = tokio::time::timeout(READ_TIMEOUT, rx2)
+                    .await
+                    .context("SCSI READ retry timed out")?
+                    .context("SCSI READ retry channel closed")?;
 
-                        check_scsi_status("SCSI READ retry", &response2)?;
-                        return Ok(response2.data.unwrap_or_else(Bytes::new));
-                    }
-                }
+                check_scsi_status("SCSI READ retry", &response2)?;
+                return Ok(response2.data.unwrap_or_else(Bytes::new));
             }
             bail!(
                 "SCSI READ at LBA {lba} failed: CheckCondition (sense: {:?})",
@@ -378,6 +379,7 @@ async fn scsi_read_single_inner(
 }
 
 /// Execute a single SCSI WRITE command.
+#[allow(clippy::too_many_arguments)]
 async fn scsi_write_single_inner(
     session: &Session,
     lun: u64,
@@ -431,15 +433,15 @@ fn check_scsi_status(op: &str, response: &PduResponse) -> Result<()> {
     match response.status {
         ScsiStatus::Good => Ok(()),
         ScsiStatus::CheckCondition => {
-            if let Some(ref sense_bytes) = response.sense {
-                if let Ok(sense) = command::parse_sense_data(sense_bytes) {
-                    bail!(
-                        "{op}: CheckCondition, sense_key={:?} ASC={:#04x} ASCQ={:#04x}",
-                        sense.sense_key,
-                        sense.asc,
-                        sense.ascq
-                    );
-                }
+            if let Some(ref sense_bytes) = response.sense
+                && let Ok(sense) = command::parse_sense_data(sense_bytes)
+            {
+                bail!(
+                    "{op}: CheckCondition, sense_key={:?} ASC={:#04x} ASCQ={:#04x}",
+                    sense.sense_key,
+                    sense.asc,
+                    sense.ascq
+                );
             }
             bail!("{op}: CheckCondition (no parseable sense data)");
         }

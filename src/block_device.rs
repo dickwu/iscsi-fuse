@@ -350,7 +350,7 @@ impl BlockDeviceWorker {
         let bs = self.block_size as u64;
         let (start_lba, block_count, skip) =
             compute_alignment(offset, actual_len as u64, self.block_size);
-        let aligned = skip == 0 && (actual_len as u64 % bs) == 0;
+        let aligned = skip == 0 && (actual_len as u64).is_multiple_of(bs);
 
         let write_data = if aligned {
             data

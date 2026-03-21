@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 
@@ -267,6 +269,7 @@ impl Bhs {
     // -----------------------------------------------------------------------
 
     /// Build a SCSI Command PDU (opcode 0x01).
+    #[allow(clippy::too_many_arguments)]
     pub fn build_scsi_command(
         lun: u64,
         itt: u32,
@@ -327,6 +330,7 @@ impl Bhs {
     }
 
     /// Build a Login Request PDU (opcode 0x03, always immediate).
+    #[allow(clippy::too_many_arguments)]
     pub fn build_login_request(
         isid: [u8; 6],
         tsih: u16,
@@ -434,6 +438,7 @@ impl Bhs {
     }
 
     /// Build a Data-In PDU (opcode 0x25).
+    #[allow(clippy::too_many_arguments)]
     pub fn build_data_in(
         itt: u32,
         data_sn: u32,
@@ -501,6 +506,7 @@ impl Bhs {
     }
 
     /// Build an R2T PDU (opcode 0x31).
+    #[allow(clippy::too_many_arguments)]
     pub fn build_r2t(
         itt: u32,
         ttt: u32,

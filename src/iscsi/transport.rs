@@ -1,7 +1,11 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use anyhow::Result;
-use bytes::{Bytes, BytesMut};
+#[cfg(test)]
+use bytes::Bytes;
+use bytes::BytesMut;
 use socket2::SockRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
