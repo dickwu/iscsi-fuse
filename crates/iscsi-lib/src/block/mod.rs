@@ -1,7 +1,7 @@
 pub mod cache;
 
 use std::collections::BTreeMap;
-use std::io::{Error as IoError, ErrorKind};
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use crate::iscsi::Pipeline;
 
 /// Helper to create an I/O error (replaces fuser::Errno::EIO).
 fn io_error(msg: &str) -> IoError {
-    IoError::new(ErrorKind::Other, msg)
+    IoError::other(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,9 @@ impl BlockDevice {
             })
             .await
             .map_err(|_| io_error("block device channel closed"))?;
-            reply_rx.await.map_err(|_| io_error("block device reply dropped"))?
+            reply_rx
+                .await
+                .map_err(|_| io_error("block device reply dropped"))?
         })
     }
 
@@ -122,7 +124,9 @@ impl BlockDevice {
             })
             .await
             .map_err(|_| io_error("block device channel closed"))?;
-            reply_rx.await.map_err(|_| io_error("block device reply dropped"))?
+            reply_rx
+                .await
+                .map_err(|_| io_error("block device reply dropped"))?
         })
     }
 
@@ -134,7 +138,9 @@ impl BlockDevice {
             tx.send(BlockRequest::Flush { reply: reply_tx })
                 .await
                 .map_err(|_| io_error("block device channel closed"))?;
-            reply_rx.await.map_err(|_| io_error("block device reply dropped"))?
+            reply_rx
+                .await
+                .map_err(|_| io_error("block device reply dropped"))?
         })
     }
 
