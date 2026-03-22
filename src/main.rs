@@ -1,8 +1,5 @@
 mod auto_format;
-mod block_device;
-mod cache;
 mod fuse_fs;
-mod iscsi;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,14 +9,14 @@ use clap::Parser;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::block_device::BlockDevice;
-use crate::cache::BlockCache;
+use iscsi_fuse::block_device::BlockDevice;
+use iscsi_fuse::cache::BlockCache;
 use crate::fuse_fs::IscsiFuseFs;
-use crate::iscsi::config::CONFIG_TEMPLATE;
-use crate::iscsi::recovery::RecoveryConfig;
-use crate::iscsi::session::{IttPool, SessionState};
-use crate::iscsi::transport::Transport;
-use crate::iscsi::{
+use iscsi_fuse::iscsi::config::CONFIG_TEMPLATE;
+use iscsi_fuse::iscsi::recovery::RecoveryConfig;
+use iscsi_fuse::iscsi::session::{IttPool, SessionState};
+use iscsi_fuse::iscsi::transport::Transport;
+use iscsi_fuse::iscsi::{
     CliArgs, Config, LoginManager, Pipeline, RecoveryManager, Session, TransportReader,
     TransportWriter,
 };

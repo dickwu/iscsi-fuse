@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tracing::{debug, error, info, warn};
 
-use crate::block_device::BlockDevice;
+use iscsi_fuse::block_device::BlockDevice;
 
 /// Tracks the attached disk device for cleanup.
 #[derive(Clone)]

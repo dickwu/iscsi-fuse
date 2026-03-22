@@ -9,7 +9,7 @@ use fuser::{
 };
 use tracing::{debug, error};
 
-use crate::block_device::BlockDevice;
+use iscsi_fuse::block_device::BlockDevice;
 
 const ROOT_INODE: INodeNo = INodeNo::ROOT;
 const DEVICE_INODE: INodeNo = INodeNo(2);
