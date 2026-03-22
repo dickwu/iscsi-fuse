@@ -201,6 +201,26 @@ pub fn build_write(lba: u64, block_count: u32) -> [u8; 16] {
     }
 }
 
+/// Build a SYNCHRONIZE CACHE (10) CDB (opcode 0x35).
+///
+/// Tells the target to flush its volatile cache to persistent storage.
+/// lba=0, block_count=0 means "flush the entire cache".
+///
+/// Reference: SBC-4 section 5.35
+pub fn build_synchronize_cache10(lba: u32, block_count: u16) -> [u8; 16] {
+    let mut cdb = [0u8; 16];
+    cdb[0] = 0x35;
+    let lba_bytes = lba.to_be_bytes();
+    cdb[2] = lba_bytes[0];
+    cdb[3] = lba_bytes[1];
+    cdb[4] = lba_bytes[2];
+    cdb[5] = lba_bytes[3];
+    let count_bytes = block_count.to_be_bytes();
+    cdb[7] = count_bytes[0];
+    cdb[8] = count_bytes[1];
+    cdb
+}
+
 // ---------------------------------------------------------------------------
 // Response parsers
 // ---------------------------------------------------------------------------
@@ -385,6 +405,26 @@ mod tests {
         assert_eq!(small[0], 0x2A);
         let large = build_write((u32::MAX as u64) + 1, 1);
         assert_eq!(large[0], 0x8A);
+    }
+
+    #[test]
+    fn test_build_synchronize_cache10() {
+        let cdb = build_synchronize_cache10(0x1000, 128);
+        assert_eq!(cdb[0], 0x35);
+        let parsed_lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]);
+        assert_eq!(parsed_lba, 0x1000);
+        let parsed_count = u16::from_be_bytes([cdb[7], cdb[8]]);
+        assert_eq!(parsed_count, 128);
+    }
+
+    #[test]
+    fn test_build_synchronize_cache10_full_flush() {
+        let cdb = build_synchronize_cache10(0, 0);
+        assert_eq!(cdb[0], 0x35);
+        let parsed_lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]);
+        assert_eq!(parsed_lba, 0);
+        let parsed_count = u16::from_be_bytes([cdb[7], cdb[8]]);
+        assert_eq!(parsed_count, 0);
     }
 
     #[test]
