@@ -200,6 +200,35 @@ impl Pipeline {
     }
 
     // -----------------------------------------------------------------------
+    // SYNCHRONIZE CACHE
+    // -----------------------------------------------------------------------
+
+    /// Issue a SCSI SYNCHRONIZE CACHE (10) command to flush the target's
+    /// volatile write cache to persistent storage.
+    ///
+    /// This MUST be called after flushing dirty writes to ensure data
+    /// survives target power loss or session disconnect.
+    pub async fn scsi_synchronize_cache(&self) -> Result<()> {
+        let cdb = command::build_synchronize_cache10(0, 0); // flush entire cache
+
+        debug!("SCSI SYNCHRONIZE CACHE");
+
+        let (_, rx) = self
+            .session
+            .submit_command(&cdb, self.lun, 0, false, false, None)
+            .await
+            .context("submit SYNCHRONIZE CACHE")?;
+
+        let response = tokio::time::timeout(WRITE_TIMEOUT, rx)
+            .await
+            .context("SYNCHRONIZE CACHE timed out")?
+            .context("SYNCHRONIZE CACHE channel closed")?;
+
+        check_scsi_status("SYNCHRONIZE CACHE", &response)?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // READ CAPACITY
     // -----------------------------------------------------------------------
 
