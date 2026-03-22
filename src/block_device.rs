@@ -452,6 +452,12 @@ impl BlockDeviceWorker {
             }
         }
 
+        // Flush target's volatile write cache to persistent storage.
+        if let Err(e) = self.pipeline.scsi_synchronize_cache().await {
+            error!("SYNCHRONIZE CACHE failed: {e}");
+            return Err(Errno::EIO);
+        }
+
         Ok(())
     }
 }
