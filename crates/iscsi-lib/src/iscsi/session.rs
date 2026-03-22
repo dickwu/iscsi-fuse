@@ -604,11 +604,24 @@ impl Session {
         let buffer_offset = pdu.bhs.r2t_buffer_offset() as usize;
         let desired_length = pdu.bhs.r2t_desired_length() as usize;
 
-        let write_data = match itt_pool.get_write_data_async(itt).await {
-            Some(d) => d,
-            None => {
-                tracing::error!(itt, "R2T for ITT with no registered write data");
-                return Ok(());
+        // The write data may not be registered yet if the target sent R2T
+        // before our submit_command caller had a chance to call register_write_data.
+        // Retry briefly to close this race window.
+        let write_data = {
+            let mut data = None;
+            for _ in 0..50 {
+                if let Some(d) = itt_pool.get_write_data_async(itt).await {
+                    data = Some(d);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            match data {
+                Some(d) => d,
+                None => {
+                    tracing::error!(itt, "R2T for ITT with no registered write data after retries");
+                    return Ok(());
+                }
             }
         };
 

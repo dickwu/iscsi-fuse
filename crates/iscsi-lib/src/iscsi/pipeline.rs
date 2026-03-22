@@ -36,11 +36,13 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Create a new pipeline. Call `set_geometry` after `read_capacity`.
+    /// Create a new pipeline. `lun` is the logical LUN number (0, 1, 2, ...);
+    /// it is automatically encoded to SAM-5 peripheral device addressing format.
+    /// Call `set_geometry` after `read_capacity`.
     pub fn new(session: Arc<Session>, lun: u64, negotiated: NegotiatedParams) -> Self {
         Self {
             session,
-            lun,
+            lun: command::encode_lun(lun),
             block_size: 0,
             total_blocks: 0,
             negotiated,
@@ -63,6 +65,14 @@ impl Pipeline {
 
     pub fn total_bytes(&self) -> u64 {
         self.total_blocks * self.block_size as u64
+    }
+
+    pub fn negotiated(&self) -> &NegotiatedParams {
+        &self.negotiated
+    }
+
+    pub fn session(&self) -> &Arc<Session> {
+        &self.session
     }
 
     /// Maximum number of blocks that fit within one burst for reads.
@@ -441,7 +451,8 @@ async fn scsi_write_single_inner(
         .await
         .context("submit SCSI WRITE")?;
 
-    // Register the full write data for R2T handling by the receiver task.
+    // Register write data for R2T handling. The receiver's handle_r2t has a
+    // retry loop to handle the race where R2T arrives before this line runs.
     session.itt_pool.register_write_data(itt, data);
 
     let response = tokio::time::timeout(WRITE_TIMEOUT, rx)

@@ -58,7 +58,11 @@ impl NegotiatedParams {
     /// Build the operational negotiation text containing all keys with 10G
     /// default values. Each key=value pair is NUL-terminated.
     pub fn build_operational_text() -> String {
-        let defaults = Self::defaults_10g();
+        Self::build_operational_text_from(&Self::defaults_10g())
+    }
+
+    /// Build the operational negotiation text from custom parameters.
+    pub fn build_operational_text_from(defaults: &Self) -> String {
         let mut text = String::new();
 
         text.push_str(&format!(
@@ -278,9 +282,21 @@ impl LoginManager {
         reader: &mut TransportReader,
         cid: u16,
     ) -> Result<LoginResult> {
+        self.login_with_params(writer, reader, cid, None).await
+    }
+
+    /// Login with optional custom negotiation parameters.
+    pub async fn login_with_params(
+        &self,
+        writer: &mut TransportWriter,
+        reader: &mut TransportReader,
+        cid: u16,
+        custom_params: Option<&NegotiatedParams>,
+    ) -> Result<LoginResult> {
         let tsih = self.security_phase(writer, reader, cid).await?;
-        let (negotiated, initial_cmd_sn, initial_exp_stat_sn) =
-            self.operational_phase(writer, reader, cid, tsih).await?;
+        let (negotiated, initial_cmd_sn, initial_exp_stat_sn) = self
+            .operational_phase_with_params(writer, reader, cid, tsih, custom_params)
+            .await?;
         Ok(LoginResult {
             tsih,
             negotiated,
@@ -351,7 +367,23 @@ impl LoginManager {
         cid: u16,
         tsih: u16,
     ) -> Result<(NegotiatedParams, u32, u32)> {
-        let text = NegotiatedParams::build_operational_text();
+        self.operational_phase_with_params(writer, reader, cid, tsih, None)
+            .await
+    }
+
+    /// Operational phase with optional custom params override.
+    async fn operational_phase_with_params(
+        &self,
+        writer: &mut TransportWriter,
+        reader: &mut TransportReader,
+        cid: u16,
+        tsih: u16,
+        custom_params: Option<&NegotiatedParams>,
+    ) -> Result<(NegotiatedParams, u32, u32)> {
+        let text = match custom_params {
+            Some(p) => NegotiatedParams::build_operational_text_from(p),
+            None => NegotiatedParams::build_operational_text(),
+        };
         let data = Bytes::from(text.into_bytes());
 
         let mut bhs = Bhs::build_login_request(
@@ -390,10 +422,17 @@ impl LoginManager {
             );
         }
 
-        let mut params = NegotiatedParams::defaults_10g();
+        let mut params = match custom_params {
+            Some(p) => p.clone(),
+            None => NegotiatedParams::defaults_10g(),
+        };
 
         if let Some(ref resp_data) = resp.data {
+            let raw_text = String::from_utf8_lossy(resp_data);
+            eprintln!("  [login] target response: {}", raw_text.replace('\0', " | "));
             params.apply_target_response(resp_data)?;
+            eprintln!("  [login] negotiated: immediate_data={}, initial_r2t={}, max_send_dsl={}",
+                params.immediate_data, params.initial_r2t, params.max_send_data_segment_length);
         }
 
         // Extract sequence numbers from the final login response for FFP init.

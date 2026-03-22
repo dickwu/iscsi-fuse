@@ -79,6 +79,26 @@ pub struct SenseData {
 }
 
 // ---------------------------------------------------------------------------
+// LUN encoding — SAM-5 peripheral device addressing
+// ---------------------------------------------------------------------------
+
+/// Encode a logical LUN number (0, 1, 2, ...) into the 8-byte SCSI SAM-5
+/// LUN format using peripheral device addressing method (0x00).
+///
+/// SAM-5 Section 4.8: for single-level LUNs, byte 0 = address method (0x00),
+/// byte 1 = LUN number, bytes 2-7 = 0.
+///
+/// As a big-endian u64: `lun_number << 48`.
+pub fn encode_lun(lun_number: u64) -> u64 {
+    (lun_number & 0xFF) << 48
+}
+
+/// Decode a SAM-5 encoded LUN back to a simple LUN number.
+pub fn decode_lun(encoded: u64) -> u64 {
+    (encoded >> 48) & 0xFF
+}
+
+// ---------------------------------------------------------------------------
 // CDB builders — all return [u8; 16]
 // ---------------------------------------------------------------------------
 
@@ -321,6 +341,20 @@ pub fn is_retryable(status: ScsiStatus, sense: Option<&SenseData>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_encode_lun() {
+        // LUN 0 → all zeros
+        assert_eq!(encode_lun(0), 0x0000_0000_0000_0000);
+        // LUN 1 → byte 1 = 0x01
+        assert_eq!(encode_lun(1), 0x0001_0000_0000_0000);
+        // LUN 5 → byte 1 = 0x05
+        assert_eq!(encode_lun(5), 0x0005_0000_0000_0000);
+        // Round-trip
+        assert_eq!(decode_lun(encode_lun(0)), 0);
+        assert_eq!(decode_lun(encode_lun(1)), 1);
+        assert_eq!(decode_lun(encode_lun(255)), 255);
+    }
 
     #[test]
     fn test_build_test_unit_ready() {
