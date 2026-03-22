@@ -559,7 +559,7 @@ impl Session {
         // Accumulate data if present.
         if let Some(ref data) = pdu.data {
             let mut acc = self.data_accumulator.lock().unwrap();
-            let buf = acc.entry(itt).or_insert_with(BytesMut::new);
+            let buf = acc.entry(itt).or_default();
             let needed = buffer_offset + data.len();
             if buf.len() < needed {
                 buf.resize(needed, 0);

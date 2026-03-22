@@ -1,3 +1,4 @@
+mod auto_format;
 mod block_device;
 mod cache;
 mod fuse_fs;
@@ -170,6 +171,8 @@ fn main() -> Result<()> {
     let _rt_guard = rt.enter();
     let coalesce_timeout = Duration::from_millis(config.cache.write_coalesce_ms);
     let coalesce_max_bytes = config.cache.write_coalesce_max_kb * 1024;
+    // Enable sync writes for auto-format or when explicitly requested.
+    let sync_writes = args.auto_format || args.sync_writes;
     let block_device = BlockDevice::spawn(
         pipeline.clone(),
         cache,
@@ -177,7 +180,11 @@ fn main() -> Result<()> {
         total_bytes,
         coalesce_timeout,
         coalesce_max_bytes,
+        sync_writes,
     );
+    if sync_writes {
+        info!("Sync-write mode enabled");
+    }
 
     // Get uid/gid
     let uid = unsafe { libc::getuid() };
@@ -185,7 +192,7 @@ fn main() -> Result<()> {
 
     // Create FUSE filesystem
     let fuse_fs = IscsiFuseFs::new(
-        block_device,
+        block_device.clone(),
         args.device_filename.clone(),
         args.read_only,
         uid,
@@ -193,6 +200,25 @@ fn main() -> Result<()> {
     );
 
     let fuse_config = IscsiFuseFs::fuse_config(args.read_only, &args.volume_name);
+
+    // Set up auto-format thread before FUSE mount (mount2 blocks).
+    let auto_format_state = auto_format::AutoFormatState::new();
+    if args.auto_format && !args.read_only {
+        let af_mount = mount_point.clone();
+        let af_filename = args.device_filename.clone();
+        let af_volume = args.volume_name.clone();
+        let af_state = auto_format_state.clone();
+        let af_block_device = block_device.clone();
+        std::thread::spawn(move || {
+            auto_format::run_auto_format(
+                af_mount,
+                af_filename,
+                af_volume,
+                af_state,
+                af_block_device,
+            );
+        });
+    }
 
     info!(
         mount_point = %mount_point.display(),
@@ -207,6 +233,9 @@ fn main() -> Result<()> {
 
     // Mount -- this blocks until the filesystem is unmounted
     fuser::mount2(fuse_fs, &mount_point, &fuse_config).context("FUSE mount2 failed")?;
+
+    // Detach disk image if auto-format attached one.
+    auto_format_state.detach();
 
     // On return (unmount): send logout
     info!("FUSE session ended, sending iSCSI logout...");

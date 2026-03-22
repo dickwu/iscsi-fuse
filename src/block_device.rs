@@ -30,6 +30,10 @@ enum BlockRequest {
     Flush {
         reply: oneshot::Sender<Result<(), Errno>>,
     },
+    SetSyncWrites {
+        enabled: bool,
+        reply: oneshot::Sender<()>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +58,7 @@ impl BlockDevice {
         total_bytes: u64,
         coalesce_timeout: Duration,
         coalesce_max_bytes: usize,
+        sync_writes: bool,
     ) -> Self {
         let (tx, rx) = mpsc::channel(256);
 
@@ -65,6 +70,7 @@ impl BlockDevice {
             dirty: DirtyMap::new(),
             coalesce_timeout,
             coalesce_max_bytes,
+            sync_writes,
         };
 
         let rt = Handle::current();
@@ -84,9 +90,13 @@ impl BlockDevice {
         let (reply_tx, reply_rx) = oneshot::channel();
         let tx = self.tx.clone();
         self.rt.block_on(async {
-            tx.send(BlockRequest::Read { offset, size, reply: reply_tx })
-                .await
-                .map_err(|_| Errno::EIO)?;
+            tx.send(BlockRequest::Read {
+                offset,
+                size,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Errno::EIO)?;
             reply_rx.await.map_err(|_| Errno::EIO)?
         })
     }
@@ -98,9 +108,13 @@ impl BlockDevice {
         let tx = self.tx.clone();
         let data = Bytes::copy_from_slice(data);
         self.rt.block_on(async {
-            tx.send(BlockRequest::Write { offset, data, reply: reply_tx })
-                .await
-                .map_err(|_| Errno::EIO)?;
+            tx.send(BlockRequest::Write {
+                offset,
+                data,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Errno::EIO)?;
             reply_rx.await.map_err(|_| Errno::EIO)?
         })
     }
@@ -115,6 +129,22 @@ impl BlockDevice {
                 .map_err(|_| Errno::EIO)?;
             reply_rx.await.map_err(|_| Errno::EIO)?
         })
+    }
+
+    /// Switch sync-write mode at runtime. When enabled, every write is
+    /// flushed to iSCSI immediately instead of coalescing.
+    pub fn set_sync_writes(&self, enabled: bool) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let tx = self.tx.clone();
+        self.rt.block_on(async {
+            tx.send(BlockRequest::SetSyncWrites {
+                enabled,
+                reply: reply_tx,
+            })
+            .await
+            .ok();
+            reply_rx.await.ok();
+        });
     }
 
     pub fn total_bytes(&self) -> u64 {
@@ -213,6 +243,8 @@ struct BlockDeviceWorker {
     dirty: DirtyMap,
     coalesce_timeout: Duration,
     coalesce_max_bytes: usize,
+    /// When true, each write is flushed to iSCSI immediately (no coalescing).
+    sync_writes: bool,
 }
 
 impl BlockDeviceWorker {
@@ -238,6 +270,11 @@ impl BlockDeviceWorker {
                         Some(BlockRequest::Flush { reply }) => {
                             let result = self.flush_dirty().await;
                             let _ = reply.send(result);
+                        }
+                        Some(BlockRequest::SetSyncWrites { enabled, reply }) => {
+                            self.sync_writes = enabled;
+                            debug!(sync_writes = enabled, "Sync-write mode changed");
+                            let _ = reply.send(());
                         }
                         None => {
                             // Channel closed -- flush remaining dirty data and exit.
@@ -367,12 +404,12 @@ impl BlockDeviceWorker {
         // Invalidate cache for written blocks.
         self.cache.invalidate_range(start_lba, block_count).await;
 
-        // If dirty buffer exceeds threshold, flush immediately.
-        if self.dirty.total_bytes >= self.coalesce_max_bytes {
+        // Flush immediately if sync mode or threshold exceeded.
+        if self.sync_writes || self.dirty.total_bytes >= self.coalesce_max_bytes {
             debug!(
+                sync = self.sync_writes,
                 total_dirty = self.dirty.total_bytes,
-                threshold = self.coalesce_max_bytes,
-                "Dirty threshold reached, flushing"
+                "Flushing dirty data"
             );
             self.flush_dirty().await?;
         }

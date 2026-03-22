@@ -402,9 +402,7 @@ impl LoginManager {
 
         debug!(
             ?params,
-            initial_cmd_sn,
-            initial_exp_stat_sn,
-            "operational phase complete"
+            initial_cmd_sn, initial_exp_stat_sn, "operational phase complete"
         );
         Ok((params, initial_cmd_sn, initial_exp_stat_sn))
     }

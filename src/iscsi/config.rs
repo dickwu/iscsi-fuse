@@ -337,6 +337,16 @@ pub struct CliArgs {
     /// Name of the virtual device file exposed inside the mount.
     #[arg(long, default_value = "disk.img")]
     pub device_filename: String,
+
+    /// Automatically format the disk with APFS after mounting.
+    /// Attaches disk image, formats with newfs_apfs, and mounts the APFS volume.
+    #[arg(long)]
+    pub auto_format: bool,
+
+    /// Write every block to iSCSI immediately (no coalescing).
+    /// Slower but guarantees read-after-write consistency for formatting tools.
+    #[arg(long)]
+    pub sync_writes: bool,
 }
 
 impl CliArgs {
