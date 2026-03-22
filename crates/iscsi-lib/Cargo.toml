@@ -1,0 +1,19 @@
+[package]
+name = "iscsi-lib"
+version = "0.5.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
+crc32c = "0.6"
+socket2 = "0.6"
+moka = { version = "0.12", features = ["future"] }
+toml = "0.8"

@@ -1,0 +1,17 @@
+[package]
+name = "iscsid"
+version = "0.5.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+iscsi-lib = { path = "../iscsi-lib" }
+tokio = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+ctrlc = "3"
+dirs = "6"
