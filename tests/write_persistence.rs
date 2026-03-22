@@ -23,9 +23,9 @@ async fn connect_and_login() -> Result<(Arc<Pipeline>, Arc<Session>)> {
     let addr =
         std::env::var("ISCSI_TARGET_ADDR").unwrap_or_else(|_| "192.168.2.57:3260".to_string());
     let initiator = std::env::var("ISCSI_INITIATOR_IQN")
-        .unwrap_or_else(|_| "iqn.2026-03.com.iscsi-rs:test".to_string());
+        .unwrap_or_else(|_| "iqn.2024-01.com.iscsi-fuse:initiator".to_string());
     let target = std::env::var("ISCSI_TARGET_IQN")
-        .unwrap_or_else(|_| "iqn.2004-04.com.qnap:ts-873a:iscsi.lun1".to_string());
+        .unwrap_or_else(|_| "iqn.2026-03.com.qnap:ts-873a:iscsi.target-0.6880d1".to_string());
     let lun: u64 = std::env::var("ISCSI_LUN")
         .unwrap_or_else(|_| "0".to_string())
         .parse()?;
