@@ -1,0 +1,31 @@
+name: iscsi-rs-dext
+options:
+  bundleIdPrefix: com.peilinwu
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "16.0"
+
+targets:
+  iscsi-rs-dext:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: iscsi-rs-dext
+        type: group
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.peilinwu.iscsi-rs-dext
+        PRODUCT_NAME: iscsi-rs-dext
+        SYSTEM_EXTENSION_API_VERSION: 1
+        CODE_SIGN_ENTITLEMENTS: iscsi-rs-dext/iscsi-rs-dext.entitlements
+        INFOPLIST_FILE: iscsi-rs-dext/Info.plist
+        SDKROOT: driverkit
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
+        GCC_C_LANGUAGE_STANDARD: c11
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        DRIVERKIT_DEPLOYMENT_TARGET: "24.0"
+        SKIP_INSTALL: "YES"
+        GENERATE_INFOPLIST_FILE: "NO"
+    dependencies:
+      - sdk: DriverKit.framework
+      - sdk: BlockStorageDeviceDriverKit.framework
