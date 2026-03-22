@@ -172,11 +172,7 @@ impl Filesystem for IscsiFuseFs {
             return;
         }
 
-        // FOPEN_DIRECT_IO bypasses the kernel page cache. This prevents
-        // DiskImages/FUSE cache incoherence when newfs_apfs writes through
-        // /dev/disk (buffered) and reads back through /dev/rdisk (raw).
-        // Our userspace BlockCache replaces the kernel page cache.
-        reply.opened(FileHandle(0), FopenFlags::FOPEN_DIRECT_IO);
+        reply.opened(FileHandle(0), FopenFlags::empty());
     }
 
     fn read(

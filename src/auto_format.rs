@@ -43,6 +43,11 @@ impl AutoFormatState {
 
 /// Run the auto-format sequence in a blocking thread.
 /// Call this from `std::thread::spawn` BEFORE `fuser::mount2`.
+///
+/// Uses HFS+ (Mac OS Extended, Journaled) which works reliably through the
+/// FUSE + DiskImages I/O path. APFS formatting fails because the macOS kernel's
+/// APFS implementation uses internal I/O paths through the DiskImages driver
+/// that don't cleanly round-trip through FUSE backing stores.
 pub fn run_auto_format(
     mount_point: PathBuf,
     device_filename: String,
@@ -84,38 +89,42 @@ pub fn run_auto_format(
     // Store for cleanup.
     *state.attached_device.lock().unwrap() = Some(disk_dev.clone());
 
-    // 3. Check if already formatted with APFS.
-    if is_apfs(&disk_dev) {
-        info!(device = %disk_dev, "Disk already has APFS container, skipping format");
-        mount_apfs_volume(&disk_dev);
-        // Switch back to async writes for normal operation.
+    // 3. Check if already formatted.
+    if is_formatted(&disk_dev) {
+        info!(device = %disk_dev, "Disk already formatted, skipping");
+        mount_volume(&disk_dev);
         block_device.set_sync_writes(false);
         info!("Switched to async writes for normal operation");
         return;
     }
 
-    // 4. Format with APFS.
-    info!(device = %disk_dev, volume = %volume_name, "Formatting with APFS");
-    let status = Command::new("newfs_apfs")
-        .args(["-v", &volume_name, &disk_dev])
+    // 4. Format with HFS+ (Journaled).
+    // APFS cannot be used here because macOS's APFS kernel implementation
+    // uses internal DiskImages I/O paths that bypass FUSE, causing data
+    // written by newfs_apfs to not round-trip through the iSCSI target.
+    // HFS+ works correctly through the FUSE + DiskImages stack.
+    info!(device = %disk_dev, volume = %volume_name, "Formatting with HFS+ (Journaled)");
+    let raw_dev = format!("/dev/r{}", &disk_dev[5..]); // /dev/disk4 -> /dev/rdisk4
+    let status = Command::new("newfs_hfs")
+        .args(["-v", &volume_name, &raw_dev])
         .status();
 
     match status {
         Ok(s) if s.success() => {
-            info!("APFS format complete");
+            info!("HFS+ format complete");
         }
         Ok(s) => {
-            error!(code = ?s.code(), "newfs_apfs failed");
+            error!(code = ?s.code(), "newfs_hfs failed");
             return;
         }
         Err(e) => {
-            error!(error = %e, "Failed to run newfs_apfs");
+            error!(error = %e, "Failed to run newfs_hfs");
             return;
         }
     }
 
-    // 5. Mount the APFS volume.
-    mount_apfs_volume(&disk_dev);
+    // 5. Mount the volume.
+    mount_volume(&disk_dev);
 
     // 6. Switch back to async writes for normal operation.
     block_device.set_sync_writes(false);
@@ -165,28 +174,31 @@ fn hdiutil_attach(image_path: &std::path::Path) -> Option<String> {
     }
 }
 
-/// Check if the device already has an APFS container.
-fn is_apfs(device: &str) -> bool {
+/// Check if the device already has a filesystem (APFS or HFS+).
+fn is_formatted(device: &str) -> bool {
     let output = Command::new("diskutil").args(["info", device]).output();
 
     match output {
         Ok(o) if o.status.success() => {
             let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.contains("Apple_APFS") || stdout.contains("Type (Bundle):  apfs")
+            stdout.contains("Apple_APFS")
+                || stdout.contains("Apple_HFS")
+                || stdout.contains("Type (Bundle):")
         }
         _ => false,
     }
 }
 
-/// Mount the first APFS volume on the device (e.g. /dev/disk4s1).
-fn mount_apfs_volume(device: &str) {
-    let volume = format!("{device}s1");
-    debug!(volume = %volume, "Mounting APFS volume");
-    let status = Command::new("diskutil").args(["mount", &volume]).status();
+/// Mount the volume on the device. Tries diskutil mountDisk for HFS+.
+fn mount_volume(device: &str) {
+    debug!(device = %device, "Mounting volume");
+    let status = Command::new("diskutil")
+        .args(["mountDisk", device])
+        .status();
 
     match status {
-        Ok(s) if s.success() => info!(volume = %volume, "APFS volume mounted"),
-        Ok(s) => warn!(code = ?s.code(), volume = %volume, "diskutil mount returned non-zero"),
-        Err(e) => warn!(error = %e, "Failed to run diskutil mount"),
+        Ok(s) if s.success() => info!(device = %device, "Volume mounted"),
+        Ok(s) => warn!(code = ?s.code(), device = %device, "diskutil mountDisk returned non-zero"),
+        Err(e) => warn!(error = %e, "Failed to run diskutil mountDisk"),
     }
 }
