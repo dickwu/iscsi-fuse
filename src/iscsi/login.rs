@@ -236,6 +236,10 @@ impl NegotiatedParams {
 pub struct LoginResult {
     pub tsih: u16,
     pub negotiated: NegotiatedParams,
+    /// The first CmdSN to use in Full Feature Phase (from target's ExpCmdSN)
+    pub initial_cmd_sn: u32,
+    /// The first StatSN we expect from the target (last login StatSN + 1)
+    pub initial_exp_stat_sn: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -275,8 +279,14 @@ impl LoginManager {
         cid: u16,
     ) -> Result<LoginResult> {
         let tsih = self.security_phase(writer, reader, cid).await?;
-        let negotiated = self.operational_phase(writer, reader, cid, tsih).await?;
-        Ok(LoginResult { tsih, negotiated })
+        let (negotiated, initial_cmd_sn, initial_exp_stat_sn) =
+            self.operational_phase(writer, reader, cid, tsih).await?;
+        Ok(LoginResult {
+            tsih,
+            negotiated,
+            initial_cmd_sn,
+            initial_exp_stat_sn,
+        })
     }
 
     /// Security phase: CSG=0 (SecurityNegotiation), NSG=1
@@ -340,7 +350,7 @@ impl LoginManager {
         reader: &mut TransportReader,
         cid: u16,
         tsih: u16,
-    ) -> Result<NegotiatedParams> {
+    ) -> Result<(NegotiatedParams, u32, u32)> {
         let text = NegotiatedParams::build_operational_text();
         let data = Bytes::from(text.into_bytes());
 
@@ -386,8 +396,17 @@ impl LoginManager {
             params.apply_target_response(resp_data)?;
         }
 
-        debug!(?params, "operational phase complete");
-        Ok(params)
+        // Extract sequence numbers from the final login response for FFP init.
+        let initial_cmd_sn = resp.bhs.exp_cmd_sn();
+        let initial_exp_stat_sn = resp.bhs.stat_sn().wrapping_add(1);
+
+        debug!(
+            ?params,
+            initial_cmd_sn,
+            initial_exp_stat_sn,
+            "operational phase complete"
+        );
+        Ok((params, initial_cmd_sn, initial_exp_stat_sn))
     }
 }
 

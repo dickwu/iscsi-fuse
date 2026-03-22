@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fuser::Errno;
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Interval, interval};
 use tracing::{debug, error, warn};
@@ -38,6 +39,7 @@ enum BlockRequest {
 #[derive(Clone)]
 pub struct BlockDevice {
     tx: mpsc::Sender<BlockRequest>,
+    rt: Handle,
     block_size: u32,
     total_bytes: u64,
 }
@@ -65,68 +67,54 @@ impl BlockDevice {
             coalesce_max_bytes,
         };
 
+        let rt = Handle::current();
         tokio::spawn(worker.run(rx));
 
         Self {
             tx,
+            rt,
             block_size,
             total_bytes,
         }
     }
 
     /// Read `size` bytes starting at `offset`.
-    /// Called from a synchronous FUSE thread -- uses blocking channel ops.
+    /// Called from a synchronous FUSE thread — uses rt.block_on to bridge sync↔async.
     pub fn read_bytes(&self, offset: u64, size: u32) -> Result<Bytes, Errno> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(BlockRequest::Read {
-                offset,
-                size,
-                reply: reply_tx,
-            })
-            .map_err(|_| {
-                error!("BlockDevice worker has shut down (read)");
-                Errno::EIO
-            })?;
-        reply_rx.blocking_recv().map_err(|_| {
-            error!("BlockDevice worker dropped reply (read)");
-            Errno::EIO
-        })?
+        let tx = self.tx.clone();
+        self.rt.block_on(async {
+            tx.send(BlockRequest::Read { offset, size, reply: reply_tx })
+                .await
+                .map_err(|_| Errno::EIO)?;
+            reply_rx.await.map_err(|_| Errno::EIO)?
+        })
     }
 
     /// Write `data` starting at `offset`.
     /// Called from a synchronous FUSE thread.
     pub fn write_bytes(&self, offset: u64, data: &[u8]) -> Result<u32, Errno> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(BlockRequest::Write {
-                offset,
-                data: Bytes::copy_from_slice(data),
-                reply: reply_tx,
-            })
-            .map_err(|_| {
-                error!("BlockDevice worker has shut down (write)");
-                Errno::EIO
-            })?;
-        reply_rx.blocking_recv().map_err(|_| {
-            error!("BlockDevice worker dropped reply (write)");
-            Errno::EIO
-        })?
+        let tx = self.tx.clone();
+        let data = Bytes::copy_from_slice(data);
+        self.rt.block_on(async {
+            tx.send(BlockRequest::Write { offset, data, reply: reply_tx })
+                .await
+                .map_err(|_| Errno::EIO)?;
+            reply_rx.await.map_err(|_| Errno::EIO)?
+        })
     }
 
     /// Flush all pending dirty writes to the target.
     pub fn flush(&self) -> Result<(), Errno> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(BlockRequest::Flush { reply: reply_tx })
-            .map_err(|_| {
-                error!("BlockDevice worker has shut down (flush)");
-                Errno::EIO
-            })?;
-        reply_rx.blocking_recv().map_err(|_| {
-            error!("BlockDevice worker dropped reply (flush)");
-            Errno::EIO
-        })?
+        let tx = self.tx.clone();
+        self.rt.block_on(async {
+            tx.send(BlockRequest::Flush { reply: reply_tx })
+                .await
+                .map_err(|_| Errno::EIO)?;
+            reply_rx.await.map_err(|_| Errno::EIO)?
+        })
     }
 
     pub fn total_bytes(&self) -> u64 {

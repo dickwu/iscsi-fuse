@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{Mutex, oneshot};
+use std::sync::Mutex;
+use tokio::sync::oneshot;
 use tracing::debug;
 
 use super::login::NegotiatedParams;
@@ -75,7 +76,7 @@ impl IttPool {
                         let (tx, rx) = oneshot::channel();
                         // Store sender — blocking_lock is fine here since we only
                         // hold the lock very briefly and never across an await.
-                        self.completions.blocking_lock()[itt as usize] = Some(tx);
+                        self.completions.lock().unwrap()[itt as usize] = Some(tx);
                         return Some((itt, rx));
                     }
                     Err(_) => continue, // CAS failed, retry
@@ -100,7 +101,7 @@ impl IttPool {
                     Ok(_) => {
                         let itt = 64 + free_bit;
                         let (tx, rx) = oneshot::channel();
-                        self.completions.blocking_lock()[itt as usize] = Some(tx);
+                        self.completions.lock().unwrap()[itt as usize] = Some(tx);
                         return Some((itt, rx));
                     }
                     Err(_) => continue,
@@ -128,7 +129,7 @@ impl IttPool {
                     Ok(_) => {
                         let itt = free_bit;
                         let (tx, rx) = oneshot::channel();
-                        self.completions.lock().await[itt as usize] = Some(tx);
+                        self.completions.lock().unwrap()[itt as usize] = Some(tx);
                         return Some((itt, rx));
                     }
                     Err(_) => continue,
@@ -153,7 +154,7 @@ impl IttPool {
                     Ok(_) => {
                         let itt = 64 + free_bit;
                         let (tx, rx) = oneshot::channel();
-                        self.completions.lock().await[itt as usize] = Some(tx);
+                        self.completions.lock().unwrap()[itt as usize] = Some(tx);
                         return Some((itt, rx));
                     }
                     Err(_) => continue,
@@ -179,7 +180,7 @@ impl IttPool {
     /// then free the ITT slot.
     pub fn complete(&self, itt: u32, response: PduResponse) {
         debug_assert!(itt < 128, "ITT out of range: {itt}");
-        let sender = self.completions.blocking_lock()[itt as usize].take();
+        let sender = self.completions.lock().unwrap()[itt as usize].take();
         if let Some(tx) = sender {
             // Receiver may have been dropped (e.g. timeout), ignore send error.
             let _ = tx.send(response);
@@ -189,24 +190,24 @@ impl IttPool {
 
     /// Register write data for a specific ITT (used for R2T handling).
     pub fn register_write_data(&self, itt: u32, data: Bytes) {
-        self.write_data.blocking_lock().insert(itt, data);
+        self.write_data.lock().unwrap().insert(itt, data);
     }
 
     /// Get a clone of the write data registered for an ITT.
     pub fn get_write_data(&self, itt: u32) -> Option<Bytes> {
-        self.write_data.blocking_lock().get(&itt).cloned()
+        self.write_data.lock().unwrap().get(&itt).cloned()
     }
 
     /// Remove and discard the write data for an ITT.
     pub fn remove_write_data(&self, itt: u32) {
-        self.write_data.blocking_lock().remove(&itt);
+        self.write_data.lock().unwrap().remove(&itt);
     }
 
     /// Complete a command asynchronously (for use from async contexts like
-    /// the receiver task). Same as `complete` but uses `.lock().await`.
+    /// the receiver task). Same as `complete` but uses `.lock().unwrap()`.
     pub async fn complete_async(&self, itt: u32, response: PduResponse) {
         debug_assert!(itt < 128, "ITT out of range: {itt}");
-        let sender = self.completions.lock().await[itt as usize].take();
+        let sender = self.completions.lock().unwrap()[itt as usize].take();
         if let Some(tx) = sender {
             let _ = tx.send(response);
         }
@@ -215,12 +216,12 @@ impl IttPool {
 
     /// Async version of `get_write_data` for use from async contexts.
     pub async fn get_write_data_async(&self, itt: u32) -> Option<Bytes> {
-        self.write_data.lock().await.get(&itt).cloned()
+        self.write_data.lock().unwrap().get(&itt).cloned()
     }
 
     /// Async version of `remove_write_data` for use from async contexts.
     pub async fn remove_write_data_async(&self, itt: u32) {
-        self.write_data.lock().await.remove(&itt);
+        self.write_data.lock().unwrap().remove(&itt);
     }
 
     /// Return all ITT slot indices that are currently in-use.
@@ -436,17 +437,17 @@ impl Session {
 
     /// Update the last-received timestamp to now (sync version for non-async callers).
     pub fn update_last_recv(&self) {
-        *self.last_recv.blocking_lock() = Instant::now();
+        *self.last_recv.lock().unwrap() = Instant::now();
     }
 
     /// Update the last-received timestamp to now (async version for the receiver task).
     pub async fn update_last_recv_async(&self) {
-        *self.last_recv.lock().await = Instant::now();
+        *self.last_recv.lock().unwrap() = Instant::now();
     }
 
     /// Return how long it has been since the last PDU was received.
     pub fn time_since_last_recv(&self) -> Duration {
-        self.last_recv.blocking_lock().elapsed()
+        self.last_recv.lock().unwrap().elapsed()
     }
 
     // -----------------------------------------------------------------------
@@ -531,9 +532,9 @@ impl Session {
         let data = self
             .data_accumulator
             .lock()
-            .await
+            .unwrap()
             .remove(&itt)
-            .map(|b| b.freeze());
+            .map(|b: BytesMut| b.freeze());
 
         let response = PduResponse {
             status: scsi_status,
@@ -557,7 +558,7 @@ impl Session {
 
         // Accumulate data if present.
         if let Some(ref data) = pdu.data {
-            let mut acc = self.data_accumulator.lock().await;
+            let mut acc = self.data_accumulator.lock().unwrap();
             let buf = acc.entry(itt).or_insert_with(BytesMut::new);
             let needed = buffer_offset + data.len();
             if buf.len() < needed {
@@ -572,9 +573,9 @@ impl Session {
             let data = self
                 .data_accumulator
                 .lock()
-                .await
+                .unwrap()
                 .remove(&itt)
-                .map(|b| b.freeze());
+                .map(|b: BytesMut| b.freeze());
 
             let response = PduResponse {
                 status: scsi_status,

@@ -60,7 +60,15 @@ impl IscsiFuseFs {
 
         let mut config = Config::default();
         config.mount_options = options;
-        config.n_threads = Some(num_cpus::get());
+        // macFUSE only supports single-threaded mode; Linux FUSE3 supports multi-threaded.
+        #[cfg(target_os = "linux")]
+        {
+            config.n_threads = Some(num_cpus::get());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            config.n_threads = Some(1);
+        }
         config
     }
 

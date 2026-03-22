@@ -104,11 +104,12 @@ fn main() -> Result<()> {
         writer.enable_digests(negotiated.header_digest, negotiated.data_digest);
         reader.enable_digests(negotiated.header_digest, negotiated.data_digest);
 
-        // f. Create IttPool and SessionState
-        // After login, CmdSN starts at 3 (we used 1 and 2 during login) and
-        // ExpStatSN starts at 2 (target sent StatSN 0 and 1 during login).
+        // f. Create IttPool and SessionState using values from login response
         let itt_pool = Arc::new(IttPool::new());
-        let state = SessionState::new(3, 2);
+        let state = SessionState::new(
+            login_result.initial_cmd_sn,
+            login_result.initial_exp_stat_sn,
+        );
 
         // g. Create Session wrapped in Arc
         let session = Arc::new(Session::new(
@@ -165,7 +166,8 @@ fn main() -> Result<()> {
     let cache_size_mb = args.cache_size_mb.unwrap_or(config.cache.size_mb);
     let cache = BlockCache::new(cache_size_mb, block_size, config.cache.readahead_max_kb);
 
-    // Spawn BlockDevice worker
+    // Spawn BlockDevice worker (needs tokio runtime context for tokio::spawn)
+    let _rt_guard = rt.enter();
     let coalesce_timeout = Duration::from_millis(config.cache.write_coalesce_ms);
     let coalesce_max_bytes = config.cache.write_coalesce_max_kb * 1024;
     let block_device = BlockDevice::spawn(
