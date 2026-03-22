@@ -42,6 +42,12 @@ pub struct IttPool {
     write_data: Mutex<HashMap<u32, Bytes>>,
 }
 
+impl Default for IttPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IttPool {
     /// Create a new pool with all 128 ITT slots free.
     pub fn new() -> Self {

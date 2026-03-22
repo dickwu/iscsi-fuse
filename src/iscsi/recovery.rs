@@ -80,6 +80,12 @@ pub struct PendingQueue {
     commands: Vec<PendingCommand>,
 }
 
+impl Default for PendingQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PendingQueue {
     /// Create an empty queue.
     pub fn new() -> Self {

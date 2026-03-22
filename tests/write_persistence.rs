@@ -20,8 +20,8 @@ use iscsi_fuse::iscsi::transport::Transport;
 /// Helper: connect, login, create pipeline, read capacity.
 /// Mirrors the setup in main.rs lines 83-155.
 async fn connect_and_login() -> Result<(Arc<Pipeline>, Arc<Session>)> {
-    let addr = std::env::var("ISCSI_TARGET_ADDR")
-        .unwrap_or_else(|_| "192.168.2.57:3260".to_string());
+    let addr =
+        std::env::var("ISCSI_TARGET_ADDR").unwrap_or_else(|_| "192.168.2.57:3260".to_string());
     let initiator = std::env::var("ISCSI_INITIATOR_IQN")
         .unwrap_or_else(|_| "iqn.2026-03.com.iscsi-rs:test".to_string());
     let target = std::env::var("ISCSI_TARGET_IQN")
@@ -116,7 +116,7 @@ async fn test_multi_block_write_persists() -> Result<()> {
     let mut data = BytesMut::with_capacity((num_blocks * block_size) as usize);
     for i in 0..num_blocks {
         let pattern = (i & 0xFF) as u8;
-        data.extend(std::iter::repeat(pattern).take(block_size as usize));
+        data.extend(std::iter::repeat_n(pattern, block_size as usize));
     }
     pipeline.scsi_write(100, data.freeze()).await?;
     pipeline.scsi_synchronize_cache().await?;
@@ -135,7 +135,8 @@ async fn test_multi_block_write_persists() -> Result<()> {
         let expected = (i & 0xFF) as u8;
         let actual = read_data[offset];
         assert_eq!(
-            actual, expected,
+            actual,
+            expected,
             "Block {} at LBA {}: expected 0x{:02X}, got 0x{:02X}",
             i,
             100 + i,
